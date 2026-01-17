@@ -9,6 +9,11 @@ import {
   Platform,
   ScrollView,
   Switch,
+  KeyboardAvoidingView,
+  Modal,
+  FlatList,
+  Linking,
+  Alert,
 } from "react-native";
 import MapView, {
   Marker,
@@ -57,7 +62,7 @@ type RouteObj = {
   // AQI samples (few points)
   aqi_samples?: AQISample[];
 
-  // ✅ NEW: colored segments along real route geometry
+  // colored segments along real route geometry
   aqi_segments?: {
     coords: { latitude: number; longitude: number }[];
     color: string;
@@ -68,6 +73,12 @@ type Suggestion = {
   label: string;
   lat: number;
   lon: number;
+};
+
+type ChatMsg = {
+  id: string;
+  role: "bot" | "user";
+  text: string;
 };
 
 function metersToKm(m: number) {
@@ -384,7 +395,7 @@ async function fetchPhotonSuggestions(query: string): Promise<Suggestion[]> {
 }
 
 // ============================
-// ✅ MAIN FIX: create AQI segments USING REAL ROUTE GEOMETRY
+// AQI segments using REAL route geometry
 // ============================
 function buildAQISegmentsFromRouteGeometry(
   routeCoords: [number, number][],
@@ -393,17 +404,15 @@ function buildAQISegmentsFromRouteGeometry(
 ) {
   if (!routeCoords || routeCoords.length < 2) return [];
 
-  // If no samples -> single segment
   if (!samples || samples.length < 2) {
     return [
       {
         coords: routeCoords.map((c) => ({ latitude: c[1], longitude: c[0] })),
-        color: active ? "#94a3b8" : "#94a3b8",
+        color: "#94a3b8",
       },
     ];
   }
 
-  // Create segments by dividing route into equal chunks based on sample count
   const segmentsCount = samples.length - 1;
   const step = Math.max(2, Math.floor(routeCoords.length / segmentsCount));
 
@@ -412,7 +421,8 @@ function buildAQISegmentsFromRouteGeometry(
 
   for (let i = 0; i < segmentsCount; i++) {
     const startIdx = i * step;
-    const endIdx = i === segmentsCount - 1 ? routeCoords.length - 1 : (i + 1) * step;
+    const endIdx =
+      i === segmentsCount - 1 ? routeCoords.length - 1 : (i + 1) * step;
 
     const chunk = routeCoords.slice(startIdx, endIdx + 1);
     if (chunk.length < 2) continue;
@@ -426,6 +436,30 @@ function buildAQISegmentsFromRouteGeometry(
   }
 
   return segments;
+}
+
+// ============================
+// CHATBOT HELPERS
+// ============================
+function pickSafestRouteIndex(routes: RouteObj[]) {
+  let bestIdx = 0;
+  let bestAQI = Infinity;
+
+  for (let i = 0; i < routes.length; i++) {
+    const aqi = routes[i].avg_aqi;
+    if (aqi === null || aqi === undefined || Number.isNaN(aqi)) continue;
+    if (aqi < bestAQI) {
+      bestAQI = aqi;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function explainAQIColors() {
+  return (
+    "AQI colors: Green (0-50 good), Yellow (51-100 moderate), Orange (101-150 unhealthy), Blue (151-200 very unhealthy), Red (200+ hazardous)."
+  );
 }
 
 export default function HomeScreen() {
@@ -477,6 +511,21 @@ export default function HomeScreen() {
 
   const [travelMode, setTravelMode] = useState<"car" | "bike" | "walk">("car");
 
+  // ============================
+  // CHATBOT STATE
+  // ============================
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
+    {
+      id: "m1",
+      role: "bot",
+      text: "I can help with AQI + routes. Try: 'Which route is safest?' or 'Explain AQI colors'.",
+    },
+  ]);
+
+  const chatListRef = useRef<FlatList<ChatMsg> | null>(null);
+
   function speakLocal(text: string) {
     try {
       const now = Date.now();
@@ -486,6 +535,85 @@ export default function HomeScreen() {
       Speech.stop();
       Speech.speak(text, { language: "en-IN", rate: 0.98, pitch: 1.0 });
     } catch {}
+  }
+
+  function pushBot(text: string) {
+    setChatMsgs((prev) => [
+      ...prev,
+      { id: `b-${Date.now()}`, role: "bot", text },
+    ]);
+  }
+
+  function pushUser(text: string) {
+    setChatMsgs((prev) => [
+      ...prev,
+      { id: `u-${Date.now()}`, role: "user", text },
+    ]);
+  }
+
+  function handleChatQuick(text: string) {
+    pushUser(text);
+    handleBotReply(text);
+  }
+
+  function handleBotReply(text: string) {
+    const t = text.trim().toLowerCase();
+
+    if (t.includes("safest") || t.includes("safe route")) {
+      if (!routes || routes.length === 0) {
+        pushBot("First find routes, then I can tell you the safest one by AQI.");
+        return;
+      }
+      const idx = pickSafestRouteIndex(routes);
+      pushBot(
+        `Safest route by AQI is Route ${idx + 1} (lowest average AQI). Tap it to select.`
+      );
+      return;
+    }
+
+    if (t.includes("aqi") && (t.includes("color") || t.includes("colours"))) {
+      pushBot(explainAQIColors());
+      return;
+    }
+
+    if (t.includes("what is aqi")) {
+      pushBot(
+        "AQI means Air Quality Index. Lower AQI is better. It estimates how polluted the air is."
+      );
+      return;
+    }
+
+    if (t.includes("risk") || t.includes("health")) {
+      const aqi = routes?.[activeRouteIndex ?? 0]?.avg_aqi ?? null;
+      const info = getHealthRiskFromAQI(aqi, sensitiveMode);
+      pushBot(`${info.label}. ${info.sub}`);
+      return;
+    }
+
+    pushBot(
+      "I can help with AQI + routes. Ask: 'Which route is safest?' or 'Explain AQI colors'."
+    );
+  }
+
+  async function callEmergency() {
+    // India: 112 (Emergency) / 108 (Ambulance)
+    // We'll try 112 first; you can change to 108 if you want.
+    const number = "112";
+
+    try {
+      const url = `tel:${number}`;
+      const can = await Linking.canOpenURL(url);
+      if (!can) {
+        Alert.alert("Call not supported", "Your device cannot place calls.");
+        return;
+      }
+      Alert.alert("Emergency Call", `Calling ${number}...`, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Call Now", style: "destructive", onPress: () => Linking.openURL(url) },
+      ]);
+    } catch {
+      Alert.alert("Error", "Could not start the call.");
+    }
   }
 
   useEffect(() => {
@@ -691,7 +819,9 @@ export default function HomeScreen() {
     return snapped;
   }
 
-  async function fetchAQISamplesForRoute(route: RouteObj): Promise<AQISample[] | null> {
+  async function fetchAQISamplesForRoute(
+    route: RouteObj
+  ): Promise<AQISample[] | null> {
     try {
       const coords = route.geometry.coordinates;
       if (!coords || coords.length < 2) return null;
@@ -710,6 +840,7 @@ export default function HomeScreen() {
         sampled = sampled.slice(0, maxPoints);
       }
 
+      // demo AQI samples
       const samplesOut: AQISample[] = sampled.map((c) => {
         const lon = c[0];
         const lat = c[1];
@@ -745,7 +876,6 @@ export default function HomeScreen() {
 
       const profile = OSRM_PROFILE_MAP[travelMode] || "driving";
 
-      // ✅ FIX: Always FULL geometry so line follows roads (no building cuts)
       const osrmUrl = `${OSRM_BASE}/route/v1/${profile}/${start.lon},${start.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson&alternatives=true&steps=false&continue_straight=false&annotations=false`;
 
       const res = await fetch(osrmUrl);
@@ -783,7 +913,6 @@ export default function HomeScreen() {
 
       setTimeout(() => fitToRoute(newRoutes[0]), 250);
 
-      // AQI update (backend)
       fetch(`${API_BASE}/aqi_for_routes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -800,7 +929,6 @@ export default function HomeScreen() {
               geometry: p.geometry,
             }));
 
-            // add samples + build real-geometry segments
             for (let i = 0; i < merged.length; i++) {
               const samples = await fetchAQISamplesForRoute(merged[i]);
               if (samples) {
@@ -999,6 +1127,14 @@ export default function HomeScreen() {
 
   const showSearchUI = !navigationMode;
 
+  // auto scroll chat to bottom
+  useEffect(() => {
+    if (!chatOpen) return;
+    setTimeout(() => {
+      chatListRef.current?.scrollToEnd({ animated: true });
+    }, 150);
+  }, [chatMsgs, chatOpen]);
+
   return (
     <View style={styles.container}>
       <MapView
@@ -1020,7 +1156,6 @@ export default function HomeScreen() {
         {routes.map((r, idx) => {
           const active = idx === activeRouteIndex;
 
-          // ✅ draw AQI segments along REAL route geometry (no cutting buildings)
           if (r.aqi_samples && r.aqi_samples.length >= 2) {
             const segs = buildAQISegmentsFromRouteGeometry(
               r.geometry.coordinates,
@@ -1044,7 +1179,6 @@ export default function HomeScreen() {
             );
           }
 
-          // fallback single color
           return (
             <Polyline
               key={idx}
@@ -1309,6 +1443,132 @@ export default function HomeScreen() {
           <Text style={{ fontSize: 18 }}>🎯</Text>
         </Pressable>
       )}
+
+      {/* CHATBOT FLOATING ICON */}
+      <Pressable
+        onPress={() => setChatOpen(true)}
+        style={[
+          styles.chatFab,
+          // keep it above nav HUD area
+          navigationMode ? { bottom: 230 } : { bottom: 26 },
+        ]}
+      >
+        <Text style={{ fontSize: 18 }}>💬</Text>
+      </Pressable>
+
+      {/* CHATBOT MODAL (Keyboard-safe, not cut) */}
+      <Modal visible={chatOpen} transparent animationType="fade">
+        <View style={styles.chatOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.chatSheetWrap}
+          >
+            <View style={styles.chatSheet}>
+              <View style={styles.chatHeader}>
+                <Text style={styles.chatTitle}>PurePath Assistant</Text>
+
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  {/* SOS button */}
+                  <Pressable onPress={callEmergency} style={styles.sosBtn}>
+                    <Text style={styles.sosText}>🚑 SOS</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => {
+                      setChatOpen(false);
+                      Keyboard.dismiss();
+                    }}
+                    style={styles.chatCloseBtn}
+                  >
+                    <Text style={styles.chatCloseText}>Close</Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* Quick buttons */}
+              <View style={styles.chatQuickRow}>
+                <Pressable
+                  onPress={() => handleChatQuick("Which route is safest")}
+                  style={styles.quickBtn}
+                >
+                  <Text style={styles.quickBtnText}>Safest route</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handleChatQuick("Explain AQI colors")}
+                  style={styles.quickBtn}
+                >
+                  <Text style={styles.quickBtnText}>AQI colors</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handleChatQuick("Health risk")}
+                  style={styles.quickBtn}
+                >
+                  <Text style={styles.quickBtnText}>Health</Text>
+                </Pressable>
+              </View>
+
+              <FlatList
+                ref={(r) => {(chatListRef.current = r)}}
+                data={chatMsgs}
+                keyExtractor={(m) => m.id}
+                style={styles.chatList}
+                contentContainerStyle={{ paddingBottom: 10 }}
+                renderItem={({ item }) => {
+                  const isUser = item.role === "user";
+                  return (
+                    <View
+                      style={[
+                        styles.chatBubble,
+                        isUser ? styles.chatBubbleUser : styles.chatBubbleBot,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.chatBubbleText,
+                          isUser ? { color: "#fff" } : { color: "#111827" },
+                        ]}
+                      >
+                        {item.text}
+                      </Text>
+                    </View>
+                  );
+                }}
+              />
+
+              <View style={styles.chatInputRow}>
+                <TextInput
+                  value={chatInput}
+                  onChangeText={setChatInput}
+                  placeholder="Ask about AQI, safest route..."
+                  placeholderTextColor="#6b7280"
+                  style={styles.chatInput}
+                  returnKeyType="send"
+                  onSubmitEditing={() => {
+                    const t = chatInput.trim();
+                    if (!t) return;
+                    pushUser(t);
+                    setChatInput("");
+                    handleBotReply(t);
+                  }}
+                />
+
+                <Pressable
+                  onPress={() => {
+                    const t = chatInput.trim();
+                    if (!t) return;
+                    pushUser(t);
+                    setChatInput("");
+                    handleBotReply(t);
+                  }}
+                  style={styles.chatSendBtn}
+                >
+                  <Text style={styles.chatSendText}>Send</Text>
+                </Pressable>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1623,5 +1883,160 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     elevation: 5,
+  },
+
+  // ============================
+  // CHATBOT STYLES
+  // ============================
+  chatFab: {
+    position: "absolute",
+    right: 18,
+    width: 52,
+    height: 52,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.95)",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 6,
+  },
+
+  chatOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.25)",
+    justifyContent: "flex-end",
+  },
+
+  chatSheetWrap: {
+    width: "100%",
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+  },
+
+  chatSheet: {
+    backgroundColor: "rgba(255,255,255,0.98)",
+    borderRadius: 22,
+    overflow: "hidden",
+    maxHeight: "70%", // ✅ prevents top cut
+  },
+
+  chatHeader: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(0,0,0,0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+
+  chatTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#111827",
+  },
+
+  chatCloseBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#e5e7eb",
+  },
+  chatCloseText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#111827",
+  },
+
+  sosBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#fee2e2",
+  },
+  sosText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#7f1d1d",
+  },
+
+  chatQuickRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  quickBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#dbeafe",
+  },
+  quickBtnText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#1d4ed8",
+  },
+
+  chatList: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    flexGrow: 0,
+  },
+
+  chatBubble: {
+    maxWidth: "86%",
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  chatBubbleBot: {
+    backgroundColor: "#e5e7eb",
+    alignSelf: "flex-start",
+  },
+  chatBubbleUser: {
+    backgroundColor: "#2563eb",
+    alignSelf: "flex-end",
+  },
+  chatBubbleText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  chatInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(0,0,0,0.08)",
+    backgroundColor: "rgba(255,255,255,0.98)",
+  },
+
+  chatInput: {
+    flex: 1,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: "#f3f4f6",
+    paddingHorizontal: 12,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#111827",
+  },
+
+  chatSendBtn: {
+    height: 44,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    backgroundColor: "#10b981",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chatSendText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 13,
   },
 });

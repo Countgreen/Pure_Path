@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Query
 import requests
-import math
 import time
 import asyncio
 from typing import Optional, List, Dict, Any, Tuple
@@ -13,8 +12,12 @@ router = APIRouter()
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 PHOTON_URL = "https://photon.komoot.io/api"
 
-# Public OSRM (slow sometimes) - later you can replace with local OSRM
-OSRM_ROUTE_URL = "http://router.project-osrm.org/route/v1/driving"
+# OSRM profiles
+OSRM_ROUTE_URLS = {
+    "car": "http://router.project-osrm.org/route/v1/driving",
+    "bike": "http://router.project-osrm.org/route/v1/cycling",
+    "walk": "http://router.project-osrm.org/route/v1/walking",
+}
 
 USER_AGENT = "PurePath/1.0 (Educational Project)"
 
@@ -25,6 +28,10 @@ MAX_ALTERNATIVES_TO_RETURN = 3
 GEOCODE_TTL = 24 * 3600
 OSRM_TTL = 15 * 60
 AQI_TTL = 30 * 60
+
+# Segment AQI coloring
+SEGMENT_COUNT = 8  # split route into 8 parts (more smooth)
+SEGMENT_SAMPLE_POINTS = 2  # sample 2 points per segment
 
 
 # =========================
@@ -204,6 +211,31 @@ def sample_points_along_route(coords: List[List[float]], max_points: int = 6):
     return sampled[:max_points]
 
 
+def split_route_into_segments(coords: List[List[float]], segments: int) -> List[List[List[float]]]:
+    """
+    Splits full route coordinates into N segments.
+    Each segment is a list of [lon,lat] coords.
+    """
+    if not coords or len(coords) < 2:
+        return []
+
+    n = len(coords)
+    segs = []
+
+    for i in range(segments):
+        start_idx = int(i * (n - 1) / segments)
+        end_idx = int((i + 1) * (n - 1) / segments)
+
+        if end_idx <= start_idx:
+            end_idx = min(n - 1, start_idx + 1)
+
+        seg_coords = coords[start_idx:end_idx + 1]
+        if len(seg_coords) >= 2:
+            segs.append(seg_coords)
+
+    return segs
+
+
 # =========================
 # AQI (CACHED + ASYNC + PARALLEL)
 # =========================
@@ -246,33 +278,84 @@ async def aggregate_route_aqi_async(coords_lonlat: List[List[float]]) -> Optiona
     return sum(values) / len(values)
 
 
+async def compute_aqi_segments(coords_lonlat: List[List[float]]) -> List[Dict[str, Any]]:
+    """
+    Returns a list of segments:
+    [
+      {
+        "geometry": { "type": "LineString", "coordinates": [...] },
+        "avg_aqi": 82.2,
+        "aqi_color": "yellow"
+      },
+      ...
+    ]
+    """
+    segs = split_route_into_segments(coords_lonlat, SEGMENT_COUNT)
+    if not segs:
+        return []
+
+    # For each segment, sample a few points and average AQI
+    async def segment_aqi(seg_coords: List[List[float]]) -> Optional[float]:
+        sampled = sample_points_along_route(seg_coords, SEGMENT_SAMPLE_POINTS)
+        if not sampled:
+            return None
+
+        tasks = []
+        for lon, lat in sampled:
+            tasks.append(get_aqi_for_point(lat, lon))
+
+        vals = await asyncio.gather(*tasks)
+        vals = [float(v) for v in vals if v is not None]
+        if not vals:
+            return None
+        return sum(vals) / len(vals)
+
+    tasks = [segment_aqi(seg) for seg in segs]
+    aqi_vals = await asyncio.gather(*tasks)
+
+    out = []
+    for i, seg in enumerate(segs):
+        aqi_val = aqi_vals[i]
+        out.append({
+            "geometry": {"type": "LineString", "coordinates": seg},
+            "avg_aqi": None if aqi_val is None else round(aqi_val, 2),
+            "aqi_color": aqi_to_color(aqi_val),
+        })
+
+    return out
+
+
 # =========================
-# OSRM ROUTES (CACHED + simplified + better alternatives)
+# OSRM ROUTES (CACHED + simplified + alternatives + mode)
 # =========================
 def osrm_get_routes_cached(
     start_lat, start_lon,
     end_lat, end_lon,
-    alternatives=True,
-    steps=True
+    mode: str = "car",
+    alternatives: bool = True,
+    steps: bool = True
 ):
+    mode = (mode or "car").lower().strip()
+    if mode not in OSRM_ROUTE_URLS:
+        mode = "car"
+
+    base_url = OSRM_ROUTE_URLS[mode]
     coords = f"{start_lon},{start_lat};{end_lon},{end_lat}"
 
     params = {
-        "overview": "simplified",  # ✅ faster
+        "overview": "simplified",  # faster
         "geometries": "geojson",
         "alternatives": "true" if alternatives else "false",
         "steps": "true" if steps else "false",
-
-        # ✅ Helps OSRM generate more alternate paths
         "continue_straight": "false",
     }
 
-    cache_key = f"{coords}|{params['overview']}|alt={params['alternatives']}|steps={params['steps']}|cs={params['continue_straight']}"
+    cache_key = f"{mode}|{coords}|{params['overview']}|alt={params['alternatives']}|steps={params['steps']}|cs={params['continue_straight']}"
     cached = cache_get(_osrm_cache, cache_key)
     if cached:
         return cached
 
-    url = f"{OSRM_ROUTE_URL}/{coords}"
+    url = f"{base_url}/{coords}"
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
@@ -339,7 +422,8 @@ def build_turn_by_turn_steps(osrm_route: Dict[str, Any]) -> List[Dict[str, Any]]
 @router.get("/navigate_fast")
 def navigate_fast(
     start: str = Query(...),
-    end: str = Query(...)
+    end: str = Query(...),
+    mode: str = Query("car")
 ):
     start_geo = geocode_place(start)
     if not start_geo:
@@ -354,11 +438,10 @@ def navigate_fast(
 
     osrm_routes = osrm_get_routes_cached(
         start_lat, start_lon, end_lat, end_lon,
-        alternatives=True, steps=True
+        mode=mode,
+        alternatives=True,
+        steps=True
     )
-
-    # DEBUG: you can see count in terminal
-    # print("OSRM routes count:", len(osrm_routes))
 
     if not osrm_routes:
         return {"routes": []}
@@ -373,11 +456,11 @@ def navigate_fast(
             "duration_s": round(r.get("duration", 0), 1),
             "avg_aqi": None,
             "aqi_color": "gray",
+            "aqi_segments": [],  # not computed in fast
             "geometry": {"type": "LineString", "coordinates": coords_lonlat},
             "steps": build_turn_by_turn_steps(r),
         })
 
-    # Best 3 by time (AQI not computed yet)
     routes_out.sort(key=lambda x: x["duration_s"])
     routes_out = routes_out[:MAX_ALTERNATIVES_TO_RETURN]
 
@@ -390,7 +473,7 @@ def navigate_fast(
 
 
 # =========================
-# 2) AQI UPDATE (compute AQI + re-rank best 3)
+# 2) AQI UPDATE (compute AQI + segments + re-rank best 3)
 # =========================
 @router.post("/aqi_for_routes")
 async def aqi_for_routes(payload: Dict[str, Any]):
@@ -407,24 +490,30 @@ async def aqi_for_routes(payload: Dict[str, Any]):
     if not routes:
         return {"recommended_index": 0, "routes": []}
 
-    # compute AQI for each route in parallel
-    tasks = []
+    # compute route avg AQI in parallel
+    avg_tasks = []
+    seg_tasks = []
+
     for r in routes:
         coords = r.get("geometry", {}).get("coordinates", [])
-        tasks.append(aggregate_route_aqi_async(coords))
+        avg_tasks.append(aggregate_route_aqi_async(coords))
+        seg_tasks.append(compute_aqi_segments(coords))
 
-    aqi_values = await asyncio.gather(*tasks)
+    avg_values = await asyncio.gather(*avg_tasks)
+    seg_values = await asyncio.gather(*seg_tasks)
 
     enriched = []
     for i, r in enumerate(routes):
-        avg_aqi = aqi_values[i]
+        avg_aqi = avg_values[i]
+        segments = seg_values[i]
+
         enriched.append({
             **r,
             "avg_aqi": None if avg_aqi is None else round(avg_aqi, 2),
-            "aqi_color": aqi_to_color(avg_aqi)
+            "aqi_color": aqi_to_color(avg_aqi),
+            "aqi_segments": segments,
         })
 
-    # re-rank by combined score (time + AQI)
     best3 = rank_routes_best(enriched, limit=MAX_ALTERNATIVES_TO_RETURN)
 
     return {
@@ -439,7 +528,8 @@ async def aqi_for_routes(payload: Dict[str, Any]):
 @router.get("/navigate")
 async def navigate(
     start: str = Query(...),
-    end: str = Query(...)
+    end: str = Query(...),
+    mode: str = Query("car")
 ):
     start_geo = geocode_place(start)
     if not start_geo:
@@ -454,13 +544,16 @@ async def navigate(
 
     osrm_routes = osrm_get_routes_cached(
         start_lat, start_lon, end_lat, end_lon,
-        alternatives=True, steps=True
+        mode=mode,
+        alternatives=True,
+        steps=True
     )
     if not osrm_routes:
         return {"routes": []}
 
-    # compute AQI for all routes in parallel
-    tasks = []
+    # compute avg AQI + segments for all routes in parallel
+    avg_tasks = []
+    seg_tasks = []
     temp_routes = []
 
     for r in osrm_routes:
@@ -474,20 +567,24 @@ async def navigate(
             "steps": build_turn_by_turn_steps(r),
         })
 
-        tasks.append(aggregate_route_aqi_async(coords_lonlat))
+        avg_tasks.append(aggregate_route_aqi_async(coords_lonlat))
+        seg_tasks.append(compute_aqi_segments(coords_lonlat))
 
-    aqi_values = await asyncio.gather(*tasks)
+    avg_values = await asyncio.gather(*avg_tasks)
+    seg_values = await asyncio.gather(*seg_tasks)
 
     routes_out = []
     for i, rr in enumerate(temp_routes):
-        avg_aqi = aqi_values[i]
+        avg_aqi = avg_values[i]
+        segments = seg_values[i]
+
         routes_out.append({
             **rr,
             "avg_aqi": None if avg_aqi is None else round(avg_aqi, 2),
             "aqi_color": aqi_to_color(avg_aqi),
+            "aqi_segments": segments,
         })
 
-    # Rank best 3 (time + AQI)
     routes_out = rank_routes_best(routes_out, limit=MAX_ALTERNATIVES_TO_RETURN)
 
     return {

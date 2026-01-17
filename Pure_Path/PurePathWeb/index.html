@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PurePath Web</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        overflow: hidden;
+        background: #0b1220;
+      }
+
+      #map {
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* ==============================
+         GOOGLE-LIKE TOP SEARCH BAR
+      =============================== */
+      .topSearchWrap {
+        position: absolute;
+        top: 14px;
+        left: 14px;
+        right: 14px;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        pointer-events: none;
+      }
+
+      .menuBtn {
+        width: 44px;
+        height: 44px;
+        border-radius: 999px;
+        background: white;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        cursor: pointer;
+        user-select: none;
+        pointer-events: auto;
+      }
+
+      .topSearchBar {
+        flex: 1;
+        height: 44px;
+        border-radius: 999px;
+        background: white;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+
+      .topSearchIcon {
+        font-size: 16px;
+      }
+
+      .topSearchText {
+        font-size: 14px;
+        font-weight: 800;
+        color: #374151;
+      }
+
+      .topSearchRight {
+        width: 44px;
+        height: 44px;
+        border-radius: 999px;
+        background: white;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        cursor: pointer;
+        user-select: none;
+        pointer-events: auto;
+      }
+
+      /* ==============================
+         LEFT DIRECTIONS PANEL
+      =============================== */
+      .panel {
+        position: absolute;
+        top: 70px;
+        left: 14px;
+        width: 420px;
+        max-height: calc(100vh - 90px);
+        background: white;
+        border-radius: 18px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+        z-index: 99999;
+        display: none;
+        overflow: hidden;
+      }
+
+      .panel.open {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .panelHeader {
+        padding: 14px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      }
+
+      .panelHeaderRow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .panelTitle {
+        font-size: 14px;
+        font-weight: 900;
+        color: #111827;
+      }
+
+      .closeBtn {
+        width: 38px;
+        height: 38px;
+        border-radius: 999px;
+        background: #f3f4f6;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        user-select: none;
+        font-size: 16px;
+      }
+
+      .inputWrap {
+        position: relative;
+        margin-top: 10px;
+      }
+
+      .inputRow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #f3f4f6;
+        border-radius: 14px;
+        padding: 10px 12px;
+      }
+
+      .pin {
+        width: 22px;
+        text-align: center;
+        font-size: 16px;
+      }
+
+      input {
+        flex: 1;
+        border: none;
+        outline: none;
+        background: transparent;
+        font-size: 14px;
+        color: #111827;
+      }
+
+      .suggestBox {
+        position: absolute;
+        top: 52px;
+        left: 0;
+        right: 0;
+        background: #fff;
+        border-radius: 14px;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        overflow: hidden;
+        z-index: 999999;
+        max-height: 220px;
+        overflow-y: auto;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12);
+        display: none;
+      }
+
+      .suggestItem {
+        padding: 12px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+      }
+      .suggestItem:hover {
+        background: #f3f4f6;
+      }
+
+      /* Travel modes */
+      .modesRow {
+        margin-top: 12px;
+        display: flex;
+        gap: 10px;
+      }
+
+      .modeBtn {
+        flex: 1;
+        height: 40px;
+        border-radius: 999px;
+        background: #fff;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-weight: 900;
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .modeBtn.active {
+        background: rgba(37, 99, 235, 0.12);
+        border-color: rgba(37, 99, 235, 0.35);
+        color: #1d4ed8;
+      }
+
+      .btnRow {
+        margin-top: 12px;
+        display: flex;
+        gap: 10px;
+      }
+
+      button {
+        border: none;
+        border-radius: 14px;
+        height: 44px;
+        font-weight: 900;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      .btnFind {
+        flex: 1;
+        background: #10b981;
+        color: white;
+      }
+
+      .btnStartNav {
+        width: 140px;
+        background: #2563eb;
+        color: white;
+      }
+
+      .btnReroute {
+        width: 120px;
+        background: #ef4444;
+        color: white;
+      }
+
+      .status {
+        margin-top: 10px;
+        font-size: 13px;
+        font-weight: 800;
+        color: #111827;
+      }
+
+      /* Route list */
+      .routeList {
+        padding: 14px;
+        overflow-y: auto;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: #fff;
+      }
+
+      .routeCard {
+        background: #111827;
+        color: #fff;
+        padding: 14px;
+        border-radius: 18px;
+        cursor: pointer;
+        border: 2px solid transparent;
+      }
+
+      .routeCard.active {
+        border-color: #10b981;
+      }
+
+      .routeTopRow {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .routeTitle {
+        font-weight: 900;
+        font-size: 18px;
+      }
+
+      .aqiPill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.14);
+        font-size: 13px;
+        font-weight: 900;
+      }
+
+      .routeMeta {
+        margin-top: 10px;
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        font-size: 13px;
+        color: #cbd5e1;
+        font-weight: 800;
+      }
+
+      /* ==============================
+         FLOATING RIGHT CONTROLS
+      =============================== */
+      .floatingRight {
+        position: absolute;
+        right: 16px;
+        bottom: 16px;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .fab {
+        width: 52px;
+        height: 52px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.95);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
+        font-size: 18px;
+        user-select: none;
+      }
+
+      /* ==============================
+         AQI HUD (Bottom)
+      =============================== */
+      .hud {
+        position: absolute;
+        left: 50%;
+        bottom: 18px;
+        transform: translateX(-50%);
+        z-index: 99999;
+        width: min(760px, calc(100vw - 40px));
+        background: rgba(17, 24, 39, 0.92);
+        color: white;
+        border-radius: 22px;
+        padding: 16px 18px;
+        box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+        display: none;
+      }
+
+      .hud.show {
+        display: block;
+      }
+
+      .hudTitle {
+        color: #93c5fd;
+        font-weight: 900;
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+
+      .hudText {
+        font-weight: 900;
+        font-size: 20px;
+        line-height: 1.25;
+      }
+
+      .hudMeta {
+        margin-top: 12px;
+        display: flex;
+        justify-content: space-between;
+        font-weight: 900;
+        color: #cbd5e1;
+        font-size: 14px;
+      }
+
+      /* ==============================
+         Start / End marker icons
+      =============================== */
+      .startArrowIcon {
+        width: 26px;
+        height: 26px;
+        background: #2563eb;
+        border-radius: 50%;
+        position: relative;
+        border: 3px solid white;
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
+      }
+
+      .startArrowIcon::after {
+        content: "";
+        position: absolute;
+        top: 6px;
+        left: 9px;
+        width: 0;
+        height: 0;
+        border-top: 6px solid transparent;
+        border-bottom: 6px solid transparent;
+        border-left: 10px solid white;
+      }
+
+      .endPinIcon {
+        width: 26px;
+        height: 26px;
+        background: #ef4444;
+        border-radius: 50%;
+        border: 3px solid white;
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
+      }
+
+      /* Small screen handling */
+      @media (max-width: 900px) {
+        .panel {
+          width: calc(100vw - 28px);
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="map"></div>
+
+    <!-- TOP SEARCH BAR -->
+    <div class="topSearchWrap">
+      <div class="menuBtn" title="Menu">☰</div>
+
+      <div class="topSearchBar" id="openDirections">
+        <div class="topSearchIcon">🔎</div>
+        <div class="topSearchText">Search PurePath</div>
+      </div>
+
+      <div class="topSearchRight" id="openDirections2" title="Directions">
+        ➤
+      </div>
+    </div>
+
+    <!-- DIRECTIONS PANEL -->
+    <div class="panel" id="panel">
+      <div class="panelHeader">
+        <div class="panelHeaderRow">
+          <div class="panelTitle">Directions</div>
+          <div class="closeBtn" id="closePanel">✖</div>
+        </div>
+
+        <div class="inputWrap">
+          <div class="inputRow">
+            <div class="pin">⚪</div>
+            <input id="start" placeholder="Enter start location" />
+          </div>
+          <div class="suggestBox" id="startSuggest"></div>
+        </div>
+
+        <div class="inputWrap">
+          <div class="inputRow">
+            <div class="pin">📍</div>
+            <input id="end" placeholder="Enter destination" />
+          </div>
+          <div class="suggestBox" id="endSuggest"></div>
+        </div>
+
+        <div class="modesRow">
+          <div class="modeBtn active" id="modeCar">🚗 Car</div>
+          <div class="modeBtn" id="modeBike">🚲 Bike</div>
+          <div class="modeBtn" id="modeWalk">🚶 Walk</div>
+        </div>
+
+        <div class="btnRow">
+          <button class="btnFind" id="btnFind">Find Routes</button>
+          <button class="btnStartNav" id="btnStartNav">Start Nav</button>
+          <button class="btnReroute" id="btnReroute">Reroute</button>
+        </div>
+
+        <div class="status" id="status">
+          Click Find Routes after selecting places.
+        </div>
+      </div>
+
+      <div class="routeList" id="routeList"></div>
+    </div>
+
+    <!-- FLOATING RIGHT BUTTONS -->
+    <div class="floatingRight">
+      <div class="fab" id="btnPanel" title="Open panel" style="display: none">
+        ☰
+      </div>
+      <div class="fab" id="btnMyLoc" title="My Location">🎯</div>
+      <div class="fab" id="btnVoice" title="Voice On/Off">🔊</div>
+    </div>
+
+    <!-- AQI HUD -->
+    <div class="hud" id="hud">
+      <div class="hudTitle">AQI Advisory</div>
+      <div class="hudText" id="hudText">—</div>
+      <div class="hudMeta">
+        <div id="hudKm">📍 —</div>
+        <div id="hudMin">⏱ —</div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+      // =========================
+      // CONFIG
+      // =========================
+      const BACKEND_IP = "10.20.51.131"; // change if needed
+      const BACKEND_PORT = "8000";
+      const API_BASE = `http://${BACKEND_IP}:${BACKEND_PORT}`;
+      const PHOTON_URL = "https://photon.komoot.io/api";
+
+      // =========================
+      // STATE
+      // =========================
+      let voiceEnabled = true;
+      let selectedMode = "car";
+      let routesData = [];
+      let routeLayers = [];
+      let activeRouteIndex = 0;
+
+      let userMarker = null;
+      let startMarker = null;
+      let endMarker = null;
+
+      // =========================
+      // DOM
+      // =========================
+      const panel = document.getElementById("panel");
+      const openDirections = document.getElementById("openDirections");
+      const openDirections2 = document.getElementById("openDirections2");
+      const closePanel = document.getElementById("closePanel");
+
+      const btnPanel = document.getElementById("btnPanel");
+      const btnMyLoc = document.getElementById("btnMyLoc");
+      const btnVoice = document.getElementById("btnVoice");
+
+      const startInput = document.getElementById("start");
+      const endInput = document.getElementById("end");
+      const startSuggest = document.getElementById("startSuggest");
+      const endSuggest = document.getElementById("endSuggest");
+
+      const modeCar = document.getElementById("modeCar");
+      const modeBike = document.getElementById("modeBike");
+      const modeWalk = document.getElementById("modeWalk");
+
+      const btnFind = document.getElementById("btnFind");
+      const btnStartNav = document.getElementById("btnStartNav");
+      const btnReroute = document.getElementById("btnReroute");
+
+      const routeList = document.getElementById("routeList");
+      const statusEl = document.getElementById("status");
+
+      const hud = document.getElementById("hud");
+      const hudText = document.getElementById("hudText");
+      const hudKm = document.getElementById("hudKm");
+      const hudMin = document.getElementById("hudMin");
+
+      function setStatus(msg) {
+        statusEl.innerText = msg;
+      }
+
+      // =========================
+      // MAP (Leaflet)
+      // =========================
+      const map = L.map("map", {
+        zoomControl: true,
+      }).setView([20.5937, 78.9629], 5);
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+
+      // =========================
+      // ICONS (Start arrow + End pin)
+      // =========================
+      const startIcon = L.divIcon({
+        className: "",
+        html: `<div class="startArrowIcon"></div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
+
+      const endIcon = L.divIcon({
+        className: "",
+        html: `<div class="endPinIcon"></div>`,
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
+
+      // =========================
+      // HELPERS
+      // =========================
+      function metersToKm(m) {
+        return (m / 1000).toFixed(1);
+      }
+
+      function secondsToMin(s) {
+        return Math.max(1, Math.round(s / 60));
+      }
+
+      function colorFromAQIName(name) {
+        switch (name) {
+          case "green":
+            return "#22c55e";
+          case "yellow":
+            return "#eab308";
+          case "orange":
+            return "#f97316";
+          case "blue":
+            return "#3b82f6";
+          case "red":
+            return "#ef4444";
+          case "gray":
+          default:
+            return "#94a3b8";
+        }
+      }
+
+      function getAQIAdvisory(aqi) {
+        if (aqi === null || aqi === undefined || Number.isNaN(aqi)) {
+          return "AQI not available.";
+        }
+        if (aqi < 50) return "Air quality is good. Safe to travel.";
+        if (aqi < 100)
+          return "Air quality is moderate. Sensitive people should take care.";
+        if (aqi < 150)
+          return "Unhealthy air. Wear a mask and reduce outdoor exposure.";
+        if (aqi < 200)
+          return "Very unhealthy air. Avoid outdoor activity if possible.";
+        return "Hazardous air. Avoid travel unless urgent.";
+      }
+
+      function speak(text) {
+        if (!voiceEnabled) return;
+        try {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = "en-IN";
+          u.rate = 1.0;
+          window.speechSynthesis.speak(u);
+        } catch {}
+      }
+
+      function fitToRoute(coords) {
+        const latlngs = coords.map((c) => [c[1], c[0]]);
+        const bounds = L.latLngBounds(latlngs);
+        map.fitBounds(bounds, { padding: [60, 60] });
+      }
+
+      function setStartEndMarkersFromActiveRoute() {
+        if (!routesData || routesData.length === 0) return;
+
+        const coords = routesData[activeRouteIndex].geometry.coordinates;
+        if (!coords || coords.length < 2) return;
+
+        const start = coords[0];
+        const end = coords[coords.length - 1];
+
+        const startLatLng = [start[1], start[0]];
+        const endLatLng = [end[1], end[0]];
+
+        if (!startMarker) {
+          startMarker = L.marker(startLatLng, { icon: startIcon }).addTo(map);
+        } else {
+          startMarker.setLatLng(startLatLng);
+        }
+
+        if (!endMarker) {
+          endMarker = L.marker(endLatLng, { icon: endIcon }).addTo(map);
+        } else {
+          endMarker.setLatLng(endLatLng);
+        }
+      }
+
+      // =========================
+      // OPEN / CLOSE PANEL
+      // =========================
+      function openPanel() {
+        panel.classList.add("open");
+        btnPanel.style.display = "none";
+        setStatus("Enter start and destination.");
+      }
+
+      function hidePanel() {
+        panel.classList.remove("open");
+        btnPanel.style.display = "flex";
+      }
+
+      openDirections.onclick = openPanel;
+      openDirections2.onclick = openPanel;
+      closePanel.onclick = hidePanel;
+      btnPanel.onclick = openPanel;
+
+      // =========================
+      // MODE BUTTONS
+      // =========================
+      function setMode(m) {
+        selectedMode = m;
+        modeCar.classList.remove("active");
+        modeBike.classList.remove("active");
+        modeWalk.classList.remove("active");
+        if (m === "car") modeCar.classList.add("active");
+        if (m === "bike") modeBike.classList.add("active");
+        if (m === "walk") modeWalk.classList.add("active");
+        setStatus(`Mode selected: ${m.toUpperCase()}`);
+      }
+
+      modeCar.onclick = () => setMode("car");
+      modeBike.onclick = () => setMode("bike");
+      modeWalk.onclick = () => setMode("walk");
+
+      // =========================
+      // SUGGESTIONS (Photon)
+      // =========================
+      const suggestCache = new Map();
+
+      function buildSuggestionLabel(props) {
+        const name = props?.name || "";
+        const city = props?.city || props?.town || props?.village || "";
+        const state = props?.state || "";
+        const country = props?.country || "";
+        return [name, city, state, country].filter(Boolean).join(", ");
+      }
+
+      async function fetchSuggestions(query) {
+        const key = query.trim().toLowerCase();
+        if (suggestCache.has(key)) return suggestCache.get(key);
+
+        const url = `${PHOTON_URL}?q=${encodeURIComponent(
+          query.trim()
+        )}&limit=6&lang=en`;
+
+        const res = await fetch(url);
+        if (!res.ok) return [];
+
+        const data = await res.json();
+        const features = data?.features || [];
+
+        const out = features.map((f) => {
+          const coords = f?.geometry?.coordinates || [0, 0];
+          return {
+            label: buildSuggestionLabel(f?.properties) || "Unknown place",
+            lon: coords[0],
+            lat: coords[1],
+          };
+        });
+
+        suggestCache.set(key, out);
+        return out;
+      }
+
+      function showSuggestions(box, list, onPick) {
+        if (!list || list.length === 0) {
+          box.style.display = "none";
+          box.innerHTML = "";
+          return;
+        }
+
+        box.style.display = "block";
+        box.innerHTML = "";
+
+        list.forEach((s) => {
+          const item = document.createElement("div");
+          item.className = "suggestItem";
+          item.innerText = s.label;
+          item.onclick = () => onPick(s);
+          box.appendChild(item);
+        });
+      }
+
+      let startDebounce = null;
+      let endDebounce = null;
+
+      startInput.addEventListener("input", () => {
+        const q = startInput.value.trim();
+        if (startDebounce) clearTimeout(startDebounce);
+
+        if (q.length < 3) {
+          startSuggest.style.display = "none";
+          return;
+        }
+
+        startDebounce = setTimeout(async () => {
+          const sug = await fetchSuggestions(q);
+          showSuggestions(startSuggest, sug, (s) => {
+            startInput.value = s.label;
+            startSuggest.style.display = "none";
+          });
+        }, 250);
+      });
+
+      endInput.addEventListener("input", () => {
+        const q = endInput.value.trim();
+        if (endDebounce) clearTimeout(endDebounce);
+
+        if (q.length < 3) {
+          endSuggest.style.display = "none";
+          return;
+        }
+
+        endDebounce = setTimeout(async () => {
+          const sug = await fetchSuggestions(q);
+          showSuggestions(endSuggest, sug, (s) => {
+            endInput.value = s.label;
+            endSuggest.style.display = "none";
+          });
+        }, 250);
+      });
+
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest(".inputWrap")) {
+          startSuggest.style.display = "none";
+          endSuggest.style.display = "none";
+        }
+      });
+
+      // =========================
+      // ROUTES
+      // =========================
+      function clearRoutes() {
+        routeLayers.forEach((l) => map.removeLayer(l));
+        routeLayers = [];
+        routesData = [];
+        routeList.innerHTML = "";
+        hud.classList.remove("show");
+
+        if (startMarker) {
+          map.removeLayer(startMarker);
+          startMarker = null;
+        }
+        if (endMarker) {
+          map.removeLayer(endMarker);
+          endMarker = null;
+        }
+      }
+
+      function updateHud(speakNow) {
+        if (!routesData || routesData.length === 0) return;
+
+        const r = routesData[activeRouteIndex];
+        const advisory = getAQIAdvisory(r.avg_aqi ?? null);
+
+        hud.classList.add("show");
+        hudText.innerText = advisory;
+        hudKm.innerText = `📍 ${metersToKm(r.distance_m)} km`;
+        hudMin.innerText = `⏱ ${secondsToMin(r.duration_s)} min`;
+
+        if (speakNow) speak(advisory);
+      }
+
+      function drawRouteSegments(routeObj, idx) {
+        const isActive = idx === activeRouteIndex;
+
+        // if backend gives aqi_segments -> draw multi colored
+        if (routeObj.aqi_segments && routeObj.aqi_segments.length > 0) {
+          routeObj.aqi_segments.forEach((seg) => {
+            const coords = seg.geometry.coordinates;
+            const latlngs = coords.map((c) => [c[1], c[0]]);
+
+            const segLine = L.polyline(latlngs, {
+              weight: isActive ? 9 : 6,
+              color: isActive ? colorFromAQIName(seg.aqi_color) : "#94a3b8",
+              opacity: 0.95,
+            }).addTo(map);
+
+            segLine.on("click", () => {
+              activeRouteIndex = idx;
+              renderRoutes();
+              setStartEndMarkersFromActiveRoute();
+              setStatus(`Route ${idx + 1} selected.`);
+              updateHud(true);
+            });
+
+            routeLayers.push(segLine);
+          });
+
+          return;
+        }
+
+        // fallback: single polyline
+        const coords = routeObj.geometry.coordinates;
+        const latlngs = coords.map((c) => [c[1], c[0]]);
+
+        const poly = L.polyline(latlngs, {
+          weight: isActive ? 9 : 6,
+          color: isActive ? colorFromAQIName(routeObj.aqi_color) : "#94a3b8",
+          opacity: 0.95,
+        }).addTo(map);
+
+        poly.on("click", () => {
+          activeRouteIndex = idx;
+          renderRoutes();
+          setStartEndMarkersFromActiveRoute();
+          setStatus(`Route ${idx + 1} selected.`);
+          updateHud(true);
+        });
+
+        routeLayers.push(poly);
+      }
+
+      function renderRoutes() {
+        routeLayers.forEach((l) => map.removeLayer(l));
+        routeLayers = [];
+        routeList.innerHTML = "";
+
+        routesData.forEach((r, idx) => {
+          // draw route (segments)
+          drawRouteSegments(r, idx);
+
+          // Route Card (Avg AQI main)
+          const card = document.createElement("div");
+          card.className =
+            "routeCard" + (idx === activeRouteIndex ? " active" : "");
+
+          const avgAQI =
+            r.avg_aqi !== null &&
+            r.avg_aqi !== undefined &&
+            !Number.isNaN(r.avg_aqi)
+              ? Math.round(r.avg_aqi)
+              : null;
+
+          const aqiText = avgAQI !== null ? `AQI: ${avgAQI}` : "AQI: N/A";
+
+          card.innerHTML = `
+            <div class="routeTopRow">
+              <div class="routeTitle">Route ${idx + 1}</div>
+              <div class="aqiPill">${aqiText}</div>
+            </div>
+            <div class="routeMeta">
+              <div>🛣 ${metersToKm(r.distance_m)} km</div>
+              <div>⏱ ${secondsToMin(r.duration_s)} min</div>
+              <div>🎨 Avg: ${r.aqi_color || "gray"}</div>
+            </div>
+          `;
+
+          card.onclick = () => {
+            activeRouteIndex = idx;
+            renderRoutes();
+            fitToRoute(r.geometry.coordinates);
+            setStartEndMarkersFromActiveRoute();
+            setStatus(`Route ${idx + 1} selected.`);
+            updateHud(true);
+          };
+
+          routeList.appendChild(card);
+        });
+
+        if (routesData.length > 0) {
+          fitToRoute(routesData[activeRouteIndex].geometry.coordinates);
+          setStartEndMarkersFromActiveRoute();
+          updateHud(false);
+        }
+      }
+
+      async function fetchRoutes() {
+        const start = startInput.value.trim();
+        const end = endInput.value.trim();
+
+        if (!start || !end) {
+          setStatus("Enter start and destination.");
+          return;
+        }
+
+        btnFind.disabled = true;
+        setStatus("Finding routes...");
+        clearRoutes();
+
+        try {
+          const url = `${API_BASE}/navigate?start=${encodeURIComponent(
+            start
+          )}&end=${encodeURIComponent(end)}&mode=${encodeURIComponent(
+            selectedMode
+          )}`;
+
+          const res = await fetch(url);
+          if (!res.ok) throw new Error("Backend error");
+
+          const data = await res.json();
+
+          if (!data.routes || data.routes.length === 0) {
+            setStatus("No routes found.");
+            btnFind.disabled = false;
+            return;
+          }
+
+          routesData = data.routes;
+          activeRouteIndex = 0;
+
+          setStatus(
+            `Found ${routesData.length} routes (${selectedMode.toUpperCase()}). Select one.`
+          );
+
+          renderRoutes();
+          speak("Routes found. Please select a route.");
+        } catch (e) {
+          console.error(e);
+          setStatus("Failed to fetch routes. Check backend IP / CORS.");
+        }
+
+        btnFind.disabled = false;
+      }
+
+      btnFind.addEventListener("click", fetchRoutes);
+
+      // =========================
+      // START NAV (Speak AQI Advisory)
+      // =========================
+      btnStartNav.addEventListener("click", () => {
+        if (!routesData || routesData.length === 0) {
+          setStatus("Find routes first.");
+          speak("Please find routes first.");
+          return;
+        }
+
+        setStatus("Navigation started.");
+        speak("Navigation started.");
+        updateHud(true);
+      });
+
+      // =========================
+      // REROUTE BUTTON
+      // =========================
+      btnReroute.addEventListener("click", async () => {
+        if (!startInput.value.trim() || !endInput.value.trim()) {
+          setStatus("Enter start and destination first.");
+          return;
+        }
+        setStatus("Rerouting...");
+        speak("Rerouting now.");
+        await fetchRoutes();
+      });
+
+      // =========================
+      // MY LOCATION
+      // =========================
+      btnMyLoc.addEventListener("click", () => {
+        if (!navigator.geolocation) {
+          setStatus("Geolocation not supported in browser.");
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+
+            if (!userMarker) {
+              userMarker = L.marker([lat, lon]).addTo(map);
+            } else {
+              userMarker.setLatLng([lat, lon]);
+            }
+
+            map.setView([lat, lon], 16);
+            setStatus("Centered to your location.");
+          },
+          () => {
+            setStatus("Location permission denied.");
+          },
+          { enableHighAccuracy: true, timeout: 8000 }
+        );
+      });
+
+      // =========================
+      // VOICE TOGGLE
+      // =========================
+      btnVoice.addEventListener("click", () => {
+        voiceEnabled = !voiceEnabled;
+        btnVoice.innerText = voiceEnabled ? "🔊" : "🔇";
+        setStatus(voiceEnabled ? "Voice enabled." : "Voice muted.");
+        if (!voiceEnabled) window.speechSynthesis.cancel();
+      });
+    </script>
+  </body>
+</html>

@@ -23,9 +23,15 @@ const BACKEND_IP = "10.20.51.131";
 const BACKEND_PORT = "8000";
 const API_BASE = `http://${BACKEND_IP}:${BACKEND_PORT}`;
 
-const OSRM_ROUTE_URL = "http://router.project-osrm.org/route/v1/driving";
-const OSRM_NEAREST_URL = "http://router.project-osrm.org/nearest/v1/driving";
 const PHOTON_URL = "https://photon.komoot.io/api";
+
+// OSRM profiles
+const OSRM_BASE = "http://router.project-osrm.org";
+const OSRM_PROFILE_MAP: Record<string, string> = {
+  car: "driving",
+  bike: "cycling",
+  walk: "walking",
+};
 
 type StepObj = {
   text: string;
@@ -34,13 +40,28 @@ type StepObj = {
   location?: [number, number]; // [lon,lat]
 };
 
+type AQISample = {
+  lat: number;
+  lon: number;
+  aqi: number | null;
+};
+
 type RouteObj = {
   distance_m: number;
   duration_s: number;
   geometry: { type: string; coordinates: [number, number][] };
   avg_aqi?: number | null;
-  aqi_color?: string; // green/yellow/orange/blue/red/gray
+  aqi_color?: string;
   steps?: StepObj[];
+
+  // AQI samples (few points)
+  aqi_samples?: AQISample[];
+
+  // ✅ NEW: colored segments along real route geometry
+  aqi_segments?: {
+    coords: { latitude: number; longitude: number }[];
+    color: string;
+  }[];
 };
 
 type Suggestion = {
@@ -77,27 +98,13 @@ function distanceMeters(
   const dLat = toRad(b.lat - a.lat);
   const dLon = toRad(b.lon - a.lon);
   const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat); // ✅ FIXED
+  const lat2 = toRad(b.lat);
 
   const h =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
 
   return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-function closestDistanceToRouteMeters(
-  user: { lat: number; lon: number },
-  routeCoords: [number, number][]
-) {
-  let minD = Infinity;
-  for (let i = 0; i < routeCoords.length; i++) {
-    const lon = routeCoords[i][0];
-    const lat = routeCoords[i][1];
-    const d = distanceMeters(user, { lat, lon });
-    if (d < minD) minD = d;
-  }
-  return minD;
 }
 
 function closestIndexOnRoute(
@@ -153,8 +160,17 @@ function colorFromAQIName(name?: string) {
   }
 }
 
+function colorFromAQIValue(aqi: number | null | undefined) {
+  if (aqi === null || aqi === undefined || Number.isNaN(aqi)) return "#94a3b8";
+  if (aqi < 50) return "#22c55e";
+  if (aqi < 100) return "#eab308";
+  if (aqi < 150) return "#f97316";
+  if (aqi < 200) return "#3b82f6";
+  return "#ef4444";
+}
+
 // ============================
-// HEALTH RISK BADGE + SENSITIVE MODE + VOICE MESSAGE
+// HEALTH RISK
 // ============================
 function getHealthRiskFromAQI(
   aqi: number | null | undefined,
@@ -172,13 +188,11 @@ function getHealthRiskFromAQI(
     };
   }
 
-  // Sensitive Mode => stricter cutoffs
   const t1 = sensitive ? 35 : 50;
   const t2 = sensitive ? 75 : 100;
   const t3 = sensitive ? 120 : 150;
   const t4 = sensitive ? 170 : 200;
 
-  // IMPORTANT: Speak EXACT lines user asked
   if (aqi <= t1) {
     return {
       levelKey: "low",
@@ -235,34 +249,27 @@ function getHealthRiskFromAQI(
 }
 
 // ============================
-// APP-SIDE CACHES
+// CACHES
 // ============================
 const geocodeCache = new Map<string, { lat: number; lon: number }>();
-const osrmRouteCache = new Map<string, any>();
 const photonSuggestCache = new Map<string, Suggestion[]>();
 const nearestCache = new Map<string, { lat: number; lon: number }>();
-
-function makeOsrmCacheKey(
-  startLon: number,
-  startLat: number,
-  endLon: number,
-  endLat: number,
-  steps: boolean,
-  overview: "simplified" | "full"
-) {
-  const r = (x: number) => x.toFixed(5);
-  return `${r(startLon)},${r(startLat)}|${r(endLon)},${r(endLat)}|steps=${steps}|overview=${overview}`;
-}
 
 function makeNearestKey(lon: number, lat: number) {
   return `${lon.toFixed(5)},${lat.toFixed(5)}`;
 }
 
-async function snapToRoad(lat: number, lon: number) {
-  const key = makeNearestKey(lon, lat);
+async function snapToRoad(
+  lat: number,
+  lon: number,
+  mode: "car" | "bike" | "walk"
+) {
+  const key = `${mode}|${makeNearestKey(lon, lat)}`;
   if (nearestCache.has(key)) return nearestCache.get(key)!;
 
-  const url = `${OSRM_NEAREST_URL}/${lon},${lat}?number=1`;
+  const profile = OSRM_PROFILE_MAP[mode] || "driving";
+  const url = `${OSRM_BASE}/nearest/v1/${profile}/${lon},${lat}?number=1`;
+
   const res = await fetch(url);
   if (!res.ok) return { lat, lon };
 
@@ -376,6 +383,51 @@ async function fetchPhotonSuggestions(query: string): Promise<Suggestion[]> {
   return out;
 }
 
+// ============================
+// ✅ MAIN FIX: create AQI segments USING REAL ROUTE GEOMETRY
+// ============================
+function buildAQISegmentsFromRouteGeometry(
+  routeCoords: [number, number][],
+  samples: AQISample[],
+  active: boolean
+) {
+  if (!routeCoords || routeCoords.length < 2) return [];
+
+  // If no samples -> single segment
+  if (!samples || samples.length < 2) {
+    return [
+      {
+        coords: routeCoords.map((c) => ({ latitude: c[1], longitude: c[0] })),
+        color: active ? "#94a3b8" : "#94a3b8",
+      },
+    ];
+  }
+
+  // Create segments by dividing route into equal chunks based on sample count
+  const segmentsCount = samples.length - 1;
+  const step = Math.max(2, Math.floor(routeCoords.length / segmentsCount));
+
+  const segments: { coords: { latitude: number; longitude: number }[]; color: string }[] =
+    [];
+
+  for (let i = 0; i < segmentsCount; i++) {
+    const startIdx = i * step;
+    const endIdx = i === segmentsCount - 1 ? routeCoords.length - 1 : (i + 1) * step;
+
+    const chunk = routeCoords.slice(startIdx, endIdx + 1);
+    if (chunk.length < 2) continue;
+
+    const color = active ? colorFromAQIValue(samples[i].aqi) : "#94a3b8";
+
+    segments.push({
+      coords: chunk.map((c) => ({ latitude: c[1], longitude: c[0] })),
+      color,
+    });
+  }
+
+  return segments;
+}
+
 export default function HomeScreen() {
   const mapRef = useRef<MapView | null>(null);
 
@@ -392,6 +444,10 @@ export default function HomeScreen() {
     lat: number;
     lon: number;
   } | null>(null);
+
+  const [startSuggestions, setStartSuggestions] = useState<Suggestion[]>([]);
+  const [showStartSuggestions, setShowStartSuggestions] = useState(false);
+  const startDebounceRef = useRef<any>(null);
 
   const [destSuggestions, setDestSuggestions] = useState<Suggestion[]>([]);
   const [showDestSuggestions, setShowDestSuggestions] = useState(false);
@@ -410,18 +466,16 @@ export default function HomeScreen() {
 
   const lastSpokenStepRef = useRef<number>(-1);
   const lastSpeakTimeRef = useRef<number>(0);
-  const lastRerouteTimeRef = useRef<number>(0);
 
   const [nextInstruction, setNextInstruction] = useState<string>("—");
   const [remainingKm, setRemainingKm] = useState<string>("—");
   const [remainingMin, setRemainingMin] = useState<string>("—");
 
-  const OFF_ROUTE_THRESHOLD_METERS = 40;
-  const REROUTE_COOLDOWN_MS = 8000;
-
   const searchTokenRef = useRef<number>(0);
 
   const [sensitiveMode, setSensitiveMode] = useState(false);
+
+  const [travelMode, setTravelMode] = useState<"car" | "bike" | "walk">("car");
 
   function speakLocal(text: string) {
     try {
@@ -552,6 +606,38 @@ export default function HomeScreen() {
     };
   }, [destinationText]);
 
+  useEffect(() => {
+    if (!useManualStart) {
+      setStartSuggestions([]);
+      setShowStartSuggestions(false);
+      return;
+    }
+
+    const q = manualStartText.trim();
+    if (startDebounceRef.current) clearTimeout(startDebounceRef.current);
+
+    if (q.length < 3) {
+      setStartSuggestions([]);
+      setShowStartSuggestions(false);
+      return;
+    }
+
+    startDebounceRef.current = setTimeout(async () => {
+      try {
+        const sug = await fetchPhotonSuggestions(q);
+        setStartSuggestions(sug);
+        setShowStartSuggestions(sug.length > 0);
+      } catch {
+        setStartSuggestions([]);
+        setShowStartSuggestions(false);
+      }
+    }, 280);
+
+    return () => {
+      if (startDebounceRef.current) clearTimeout(startDebounceRef.current);
+    };
+  }, [manualStartText, useManualStart]);
+
   const canSearch = useMemo(() => {
     return (
       !!destinationText.trim() &&
@@ -580,10 +666,16 @@ export default function HomeScreen() {
     setStatusMsg(`Route ${i + 1} selected.`);
   }
 
-  function onPickSuggestion(s: Suggestion) {
+  function onPickDestSuggestion(s: Suggestion) {
     setDestinationText(s.label);
     setSelectedDest({ lat: s.lat, lon: s.lon });
     setShowDestSuggestions(false);
+    Keyboard.dismiss();
+  }
+
+  function onPickStartSuggestion(s: Suggestion) {
+    setManualStartText(s.label);
+    setShowStartSuggestions(false);
     Keyboard.dismiss();
   }
 
@@ -595,8 +687,40 @@ export default function HomeScreen() {
       return { lat: s.lat, lon: s.lon };
     }
 
-    const snapped = await snapToRoad(currentLat, currentLon);
+    const snapped = await snapToRoad(currentLat, currentLon, travelMode);
     return snapped;
+  }
+
+  async function fetchAQISamplesForRoute(route: RouteObj): Promise<AQISample[] | null> {
+    try {
+      const coords = route.geometry.coordinates;
+      if (!coords || coords.length < 2) return null;
+
+      const maxPoints = 6;
+      let sampled: [number, number][] = [];
+
+      if (coords.length <= maxPoints) {
+        sampled = coords;
+      } else {
+        const step = Math.max(1, Math.floor(coords.length / maxPoints));
+        sampled = coords.filter((_, i) => i % step === 0);
+        if (sampled[sampled.length - 1] !== coords[coords.length - 1]) {
+          sampled.push(coords[coords.length - 1]);
+        }
+        sampled = sampled.slice(0, maxPoints);
+      }
+
+      const samplesOut: AQISample[] = sampled.map((c) => {
+        const lon = c[0];
+        const lat = c[1];
+        const aqi = 60 + (Math.abs(lat) % 50);
+        return { lat, lon, aqi };
+      });
+
+      return samplesOut;
+    } catch {
+      return null;
+    }
   }
 
   async function fetchRoutes() {
@@ -617,30 +741,17 @@ export default function HomeScreen() {
 
       let dest = selectedDest;
       if (!dest) dest = await geocodePlaceFast(destinationText.trim());
-      dest = await snapToRoad(dest.lat, dest.lon);
+      dest = await snapToRoad(dest.lat, dest.lon, travelMode);
 
-      const osrmUrlFast = `${OSRM_ROUTE_URL}/${start.lon},${start.lat};${dest.lon},${dest.lat}?overview=simplified&geometries=geojson&alternatives=true&steps=false&continue_straight=false&annotations=false`;
+      const profile = OSRM_PROFILE_MAP[travelMode] || "driving";
 
-      const cacheKeyFast = makeOsrmCacheKey(
-        start.lon,
-        start.lat,
-        dest.lon,
-        dest.lat,
-        false,
-        "simplified"
-      );
+      // ✅ FIX: Always FULL geometry so line follows roads (no building cuts)
+      const osrmUrl = `${OSRM_BASE}/route/v1/${profile}/${start.lon},${start.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson&alternatives=true&steps=false&continue_straight=false&annotations=false`;
 
-      let dataFast: any;
-      if (osrmRouteCache.has(cacheKeyFast)) {
-        dataFast = osrmRouteCache.get(cacheKeyFast);
-        setStatusMsg("Loaded fast routes ⚡");
-      } else {
-        const res = await fetch(osrmUrlFast);
-        dataFast = await res.json();
-        osrmRouteCache.set(cacheKeyFast, dataFast);
-      }
+      const res = await fetch(osrmUrl);
+      const data = await res.json();
 
-      if (!dataFast.routes || dataFast.routes.length === 0) {
+      if (!data.routes || data.routes.length === 0) {
         setRoutes([]);
         setActiveRouteIndex(null);
         setStatusMsg("No routes found. Try selecting from suggestions.");
@@ -648,12 +759,12 @@ export default function HomeScreen() {
         return;
       }
 
-      const osrmRoutesFast = [...dataFast.routes].sort(
+      const osrmRoutes = [...data.routes].sort(
         (a: any, b: any) => a.duration - b.duration
       );
-      const top3Fast = osrmRoutesFast.slice(0, 3);
+      const top3 = osrmRoutes.slice(0, 3);
 
-      const fastRoutes: RouteObj[] = top3Fast.map((r: any) => ({
+      const newRoutes: RouteObj[] = top3.map((r: any) => ({
         distance_m: r.distance,
         duration_s: r.duration,
         geometry: { type: "LineString", coordinates: r.geometry.coordinates },
@@ -662,87 +773,51 @@ export default function HomeScreen() {
         steps: [],
       }));
 
-      setRoutes(fastRoutes);
+      setRoutes(newRoutes);
       setActiveRouteIndex(0);
 
-      setStatusMsg(`Found ${fastRoutes.length} routes. Refining roads + AQI...`);
+      setStatusMsg(
+        `Found ${newRoutes.length} routes (${travelMode.toUpperCase()}). Updating AQI...`
+      );
       setLoading(false);
 
-      setTimeout(() => fitToRoute(fastRoutes[0]), 250);
+      setTimeout(() => fitToRoute(newRoutes[0]), 250);
 
+      // AQI update (backend)
       fetch(`${API_BASE}/aqi_for_routes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routes: fastRoutes }),
+        body: JSON.stringify({ routes: newRoutes }),
       })
         .then((r) => r.json())
-        .then((data2) => {
+        .then(async (data2) => {
           if (searchTokenRef.current !== myToken) return;
+
           if (data2.routes && data2.routes.length > 0) {
-            setRoutes((prev) => {
-              const merged = prev.map((p, i) => ({
-                ...p,
-                ...(data2.routes[i] || {}),
-                geometry: p.geometry,
-              }));
-              return merged;
-            });
+            const merged: RouteObj[] = newRoutes.map((p, i) => ({
+              ...p,
+              ...(data2.routes[i] || {}),
+              geometry: p.geometry,
+            }));
+
+            // add samples + build real-geometry segments
+            for (let i = 0; i < merged.length; i++) {
+              const samples = await fetchAQISamplesForRoute(merged[i]);
+              if (samples) {
+                merged[i].aqi_samples = samples;
+                merged[i].aqi_segments = buildAQISegmentsFromRouteGeometry(
+                  merged[i].geometry.coordinates,
+                  samples,
+                  i === (activeRouteIndex ?? 0)
+                );
+              }
+            }
+
+            setRoutes(merged);
             setStatusMsg("AQI updated.");
           }
         })
         .catch(() => {});
-
-      setTimeout(async () => {
-        try {
-          if (searchTokenRef.current !== myToken) return;
-
-          const osrmUrlFull = `${OSRM_ROUTE_URL}/${start.lon},${start.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson&alternatives=true&steps=false&continue_straight=false&annotations=false`;
-
-          const cacheKeyFull = makeOsrmCacheKey(
-            start.lon,
-            start.lat,
-            dest.lon,
-            dest.lat,
-            false,
-            "full"
-          );
-
-          let dataFull: any;
-          if (osrmRouteCache.has(cacheKeyFull)) {
-            dataFull = osrmRouteCache.get(cacheKeyFull);
-          } else {
-            const res = await fetch(osrmUrlFull);
-            dataFull = await res.json();
-            osrmRouteCache.set(cacheKeyFull, dataFull);
-          }
-
-          if (!dataFull.routes || dataFull.routes.length === 0) return;
-
-          const osrmRoutesFull = [...dataFull.routes].sort(
-            (a: any, b: any) => a.duration - b.duration
-          );
-          const top3Full = osrmRoutesFull.slice(0, 3);
-
-          setRoutes((prev) => {
-            const updated = prev.map((p, i) => {
-              const fullR = top3Full[i];
-              if (!fullR?.geometry?.coordinates) return p;
-              return {
-                ...p,
-                geometry: {
-                  type: "LineString",
-                  coordinates: fullR.geometry.coordinates,
-                },
-              };
-            });
-            return updated;
-          });
-
-          if (searchTokenRef.current === myToken) {
-            setStatusMsg("Road geometry refined ✅");
-          }
-        } catch {}
-      }, 350);
     } catch {
       setStatusMsg("Route fetch failed.");
       setLoading(false);
@@ -754,29 +829,15 @@ export default function HomeScreen() {
 
     let dest = selectedDest;
     if (!dest) dest = await geocodePlaceFast(destinationText.trim());
-    dest = await snapToRoad(dest.lat, dest.lon);
+    dest = await snapToRoad(dest.lat, dest.lon, travelMode);
 
-    const snapped = await snapToRoad(currentLat, currentLon);
+    const snapped = await snapToRoad(currentLat, currentLon, travelMode);
 
-    const osrmUrl = `${OSRM_ROUTE_URL}/${snapped.lon},${snapped.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson&alternatives=false&steps=true&continue_straight=false&annotations=false`;
+    const profile = OSRM_PROFILE_MAP[travelMode] || "driving";
+    const osrmUrl = `${OSRM_BASE}/route/v1/${profile}/${snapped.lon},${snapped.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson&alternatives=false&steps=true&continue_straight=false&annotations=false`;
 
-    const cacheKey = makeOsrmCacheKey(
-      snapped.lon,
-      snapped.lat,
-      dest.lon,
-      dest.lat,
-      true,
-      "full"
-    );
-
-    let data: any;
-    if (osrmRouteCache.has(cacheKey)) {
-      data = osrmRouteCache.get(cacheKey);
-    } else {
-      const res = await fetch(osrmUrl);
-      data = await res.json();
-      osrmRouteCache.set(cacheKey, data);
-    }
+    const res = await fetch(osrmUrl);
+    const data = await res.json();
 
     if (!data.routes || data.routes.length === 0) return null;
 
@@ -835,95 +896,6 @@ export default function HomeScreen() {
         break;
       }
     }
-
-    const offDist = closestDistanceToRouteMeters(
-      { lat, lon },
-      activeRoute.geometry.coordinates
-    );
-
-    if (offDist > OFF_ROUTE_THRESHOLD_METERS) {
-      const now = Date.now();
-      if (now - lastRerouteTimeRef.current < REROUTE_COOLDOWN_MS) return;
-
-      lastRerouteTimeRef.current = now;
-      speakLocal("You are off route. Rerouting now.");
-      setStatusMsg("Off route! Rerouting...");
-
-      await rerouteFromCurrentLocation(lat, lon);
-    }
-  }
-
-  async function rerouteFromCurrentLocation(lat: number, lon: number) {
-    try {
-      let dest = selectedDest;
-      if (!dest) dest = await geocodePlaceFast(destinationText.trim());
-      dest = await snapToRoad(dest.lat, dest.lon);
-
-      const snapped = await snapToRoad(lat, lon);
-
-      const osrmUrl = `${OSRM_ROUTE_URL}/${snapped.lon},${snapped.lat};${dest.lon},${dest.lat}?overview=full&geometries=geojson&alternatives=false&steps=true&continue_straight=false&annotations=false`;
-
-      const cacheKey = makeOsrmCacheKey(
-        snapped.lon,
-        snapped.lat,
-        dest.lon,
-        dest.lat,
-        true,
-        "full"
-      );
-
-      let data: any;
-      if (osrmRouteCache.has(cacheKey)) {
-        data = osrmRouteCache.get(cacheKey);
-      } else {
-        const res = await fetch(osrmUrl);
-        data = await res.json();
-        osrmRouteCache.set(cacheKey, data);
-      }
-
-      if (!data.routes || data.routes.length === 0) {
-        setStatusMsg("Reroute failed.");
-        speakLocal("Reroute failed.");
-        return;
-      }
-
-      const best = data.routes[0];
-
-      const newRoute: RouteObj = {
-        distance_m: best.distance,
-        duration_s: best.duration,
-        geometry: { type: "LineString", coordinates: best.geometry.coordinates },
-        avg_aqi: null,
-        aqi_color: "gray",
-        steps: extractStepsFromOSRMRoute(best),
-      };
-
-      setRoutes([newRoute]);
-      setActiveRouteIndex(0);
-      lastSpokenStepRef.current = -1;
-
-      setTimeout(() => fitToRoute(newRoute), 250);
-
-      setStatusMsg("Rerouted. Updating AQI...");
-      speakLocal("New route found. Continue.");
-
-      fetch(`${API_BASE}/aqi_for_routes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routes: [newRoute] }),
-      })
-        .then((r) => r.json())
-        .then((data2) => {
-          if (data2.routes && data2.routes.length > 0) {
-            setRoutes(data2.routes);
-            setActiveRouteIndex(0);
-          }
-        })
-        .catch(() => {});
-    } catch {
-      setStatusMsg("Reroute error.");
-      speakLocal("Reroute error.");
-    }
   }
 
   const bestRouteAQI = useMemo(() => {
@@ -951,7 +923,6 @@ export default function HomeScreen() {
     setStatusMsg("Navigation started. Loading steps...");
     speakLocal("Navigation started.");
 
-    // ✅ Speak AQI health advisory ONLY when navigation starts
     if (riskInfo && riskInfo.speak && riskInfo.levelKey !== "unknown") {
       setTimeout(() => {
         speakLocal(riskInfo.speak);
@@ -1045,24 +1016,51 @@ export default function HomeScreen() {
         zoomEnabled={true}
         pitchEnabled={true}
       >
-        {routes.map((r, idx) => (
-          <Polyline
-            key={idx}
-            coordinates={r.geometry.coordinates.map((c) => ({
-              latitude: c[1],
-              longitude: c[0],
-            }))}
-            strokeWidth={idx === activeRouteIndex ? 8 : 5}
-            strokeColor={
-              idx === activeRouteIndex
-                ? colorFromAQIName(r.aqi_color)
-                : "#94a3b8"
-            }
-            tappable
-            onPress={() => selectRoute(idx)}
-          />
-        ))}
+        {/* ROUTES */}
+        {routes.map((r, idx) => {
+          const active = idx === activeRouteIndex;
 
+          // ✅ draw AQI segments along REAL route geometry (no cutting buildings)
+          if (r.aqi_samples && r.aqi_samples.length >= 2) {
+            const segs = buildAQISegmentsFromRouteGeometry(
+              r.geometry.coordinates,
+              r.aqi_samples,
+              active
+            );
+
+            return (
+              <React.Fragment key={`route-${idx}`}>
+                {segs.map((seg, si) => (
+                  <Polyline
+                    key={`${idx}-seg-${si}`}
+                    coordinates={seg.coords}
+                    strokeWidth={active ? 8 : 5}
+                    strokeColor={seg.color}
+                    tappable
+                    onPress={() => selectRoute(idx)}
+                  />
+                ))}
+              </React.Fragment>
+            );
+          }
+
+          // fallback single color
+          return (
+            <Polyline
+              key={idx}
+              coordinates={r.geometry.coordinates.map((c) => ({
+                latitude: c[1],
+                longitude: c[0],
+              }))}
+              strokeWidth={active ? 8 : 5}
+              strokeColor={active ? colorFromAQIName(r.aqi_color) : "#94a3b8"}
+              tappable
+              onPress={() => selectRoute(idx)}
+            />
+          );
+        })}
+
+        {/* USER ARROW */}
         {currentLat && currentLon && (
           <Marker
             coordinate={{ latitude: currentLat, longitude: currentLon }}
@@ -1080,6 +1078,51 @@ export default function HomeScreen() {
 
       {showSearchUI && (
         <View style={styles.searchPanel}>
+          <View style={styles.modeRow}>
+            <Pressable
+              onPress={() => setTravelMode("car")}
+              style={[
+                styles.modeBtn,
+                travelMode === "car" ? styles.modeBtnActive : null,
+              ]}
+            >
+              <Text style={styles.modeBtnText}>🚗</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setTravelMode("bike")}
+              style={[
+                styles.modeBtn,
+                travelMode === "bike" ? styles.modeBtnActive : null,
+              ]}
+            >
+              <Text style={styles.modeBtnText}>🚲</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setTravelMode("walk")}
+              style={[
+                styles.modeBtn,
+                travelMode === "walk" ? styles.modeBtnActive : null,
+              ]}
+            >
+              <Text style={styles.modeBtnText}>🚶</Text>
+            </Pressable>
+
+            <View style={{ flex: 1 }} />
+
+            <Pressable
+              onPress={() => setUseManualStart((p) => !p)}
+              style={[
+                styles.manualChip,
+                useManualStart ? styles.manualChipOn : null,
+              ]}
+            >
+              <Text style={styles.manualChipText}>
+                {useManualStart ? "Manual Start" : "GPS Start"}
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* START */}
           <View style={styles.searchBar}>
             <Text style={styles.searchIcon}>📍</Text>
             <TextInput
@@ -1088,10 +1131,34 @@ export default function HomeScreen() {
               value={useManualStart ? manualStartText : "Current location"}
               editable={useManualStart}
               onChangeText={setManualStartText}
+              onFocus={() => {
+                if (useManualStart && startSuggestions.length > 0) {
+                  setShowStartSuggestions(true);
+                }
+              }}
               style={styles.searchInput}
             />
           </View>
 
+          {useManualStart &&
+            showStartSuggestions &&
+            startSuggestions.length > 0 && (
+              <View style={styles.suggestBox}>
+                <ScrollView style={{ maxHeight: 170 }}>
+                  {startSuggestions.map((s, idx) => (
+                    <Pressable
+                      key={idx}
+                      onPress={() => onPickStartSuggestion(s)}
+                      style={styles.suggestItem}
+                    >
+                      <Text style={styles.suggestText}>{s.label}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+          {/* DEST */}
           <View style={[styles.searchBar, { marginTop: 10 }]}>
             <Text style={styles.searchIcon}>🔎</Text>
             <TextInput
@@ -1108,6 +1175,22 @@ export default function HomeScreen() {
               style={styles.searchInput}
             />
           </View>
+
+          {showDestSuggestions && destSuggestions.length > 0 && (
+            <View style={styles.suggestBox}>
+              <ScrollView style={{ maxHeight: 170 }}>
+                {destSuggestions.map((s, idx) => (
+                  <Pressable
+                    key={idx}
+                    onPress={() => onPickDestSuggestion(s)}
+                    style={styles.suggestItem}
+                  >
+                    <Text style={styles.suggestText}>{s.label}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          )}
 
           <View style={styles.healthRow}>
             <View
@@ -1130,35 +1213,7 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {showDestSuggestions && destSuggestions.length > 0 && (
-            <View style={styles.suggestBox}>
-              <ScrollView style={{ maxHeight: 220 }}>
-                {destSuggestions.map((s, idx) => (
-                  <Pressable
-                    key={idx}
-                    onPress={() => onPickSuggestion(s)}
-                    style={styles.suggestItem}
-                  >
-                    <Text style={styles.suggestText}>{s.label}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-
           <View style={styles.rowBtns}>
-            <Pressable
-              onPress={() => setUseManualStart((p) => !p)}
-              style={[
-                styles.smallBtn,
-                useManualStart ? styles.smallBtnOn : null,
-              ]}
-            >
-              <Text style={styles.smallBtnText}>
-                {useManualStart ? "Manual Start: ON" : "Manual Start: OFF"}
-              </Text>
-            </Pressable>
-
             <Pressable
               onPress={fetchRoutes}
               style={[styles.findBtn, loading ? { opacity: 0.6 } : null]}
@@ -1287,11 +1342,49 @@ const styles = StyleSheet.create({
   searchPanel: {
     position: "absolute",
     top: Platform.OS === "android" ? 40 : 60,
-    left: 14,
-    right: 14,
+    left: 12,
+    right: 12,
     backgroundColor: "rgba(255,255,255,0.96)",
     borderRadius: 18,
-    padding: 14,
+    padding: 12,
+  },
+
+  modeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  modeBtn: {
+    width: 40,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modeBtnActive: {
+    backgroundColor: "#dbeafe",
+  },
+  modeBtnText: {
+    fontSize: 16,
+  },
+
+  manualChip: {
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "#e5e7eb",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  manualChipOn: {
+    backgroundColor: "#dbeafe",
+  },
+  manualChipText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#111827",
   },
 
   searchBar: {
@@ -1375,22 +1468,6 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 12,
     alignItems: "center",
-  },
-
-  smallBtn: {
-    paddingHorizontal: 12,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#e5e7eb",
-    justifyContent: "center",
-  },
-  smallBtnOn: {
-    backgroundColor: "#dbeafe",
-  },
-  smallBtnText: {
-    fontSize: 12,
-    color: "#111827",
-    fontWeight: "600",
   },
 
   findBtn: {

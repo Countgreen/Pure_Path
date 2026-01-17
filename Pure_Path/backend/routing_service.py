@@ -1,26 +1,23 @@
 import requests
 
-OSRM_BASE_URL = "http://router.project-osrm.org/route/v1/driving"
+OSRM_PROFILE_URLS = {
+    "car": "http://router.project-osrm.org/route/v1/driving",
+    "bike": "http://router.project-osrm.org/route/v1/cycling",
+    "walk": "http://router.project-osrm.org/route/v1/walking",
+}
 
 
 def _build_instruction(step: dict) -> str:
-    """
-    Convert OSRM step into a clean human instruction.
-    OSRM doesn't provide full text instructions like Google,
-    so we generate them ourselves.
-    """
     maneuver = step.get("maneuver", {}) or {}
     step_type = (maneuver.get("type") or "").lower()
     modifier = (maneuver.get("modifier") or "").lower()
     road_name = (step.get("name") or "").strip()
 
-    # Helper: attach road if present
     def onto_road(txt: str) -> str:
         if road_name:
             return f"{txt} onto {road_name}"
         return txt
 
-    # Handle common maneuver types
     if step_type == "depart":
         return onto_road("Start")
 
@@ -33,7 +30,6 @@ def _build_instruction(step: dict) -> str:
         return onto_road("Turn")
 
     if step_type == "new name":
-        # This usually means the road continues but name changes
         return onto_road("Continue")
 
     if step_type == "continue":
@@ -78,30 +74,28 @@ def _build_instruction(step: dict) -> str:
             return onto_road(f"At the end of the road, turn {modifier}")
         return onto_road("At the end of the road, turn")
 
-    # fallback
-    # If OSRM gives road name only, still show something meaningful
     if road_name:
         return f"Continue on {road_name}"
 
     return "Continue"
 
 
-def get_osrm_routes(start_coord, end_coord, alternatives=True):
+def get_osrm_routes(start_coord, end_coord, mode="car", alternatives=True):
     """
     start_coord = [lon, lat]
     end_coord   = [lon, lat]
-
-    Returns a list of routes with:
-    - distance_m
-    - duration_s
-    - geometry (GeoJSON LineString)
-    - steps (turn-by-turn instructions)
+    mode = car | bike | walk
     """
+    mode = (mode or "car").lower().strip()
+    if mode not in OSRM_PROFILE_URLS:
+        mode = "car"
+
+    base_url = OSRM_PROFILE_URLS[mode]
 
     start_lon, start_lat = start_coord
     end_lon, end_lat = end_coord
 
-    url = f"{OSRM_BASE_URL}/{start_lon},{start_lat};{end_lon},{end_lat}"
+    url = f"{base_url}/{start_lon},{start_lat};{end_lon},{end_lat}"
 
     params = {
         "overview": "full",
@@ -109,6 +103,7 @@ def get_osrm_routes(start_coord, end_coord, alternatives=True):
         "alternatives": "true" if alternatives else "false",
         "steps": "true",
         "annotations": "true",
+        "continue_straight": "false",
     }
 
     res = requests.get(url, params=params, timeout=20)
@@ -138,25 +133,20 @@ def get_osrm_routes(start_coord, end_coord, alternatives=True):
                 steps = leg.get("steps", [])
                 for step in steps:
                     maneuver = step.get("maneuver", {}) or {}
-
                     instruction_text = _build_instruction(step)
 
                     route_obj["steps"].append({
                         "instruction": instruction_text,
                         "distance_m": step.get("distance", 0),
                         "duration_s": step.get("duration", 0),
-
-                        # useful for navigation mode later
                         "maneuver": {
                             "type": maneuver.get("type"),
                             "modifier": maneuver.get("modifier"),
                             "exit": maneuver.get("exit"),
-                            "location": maneuver.get("location"),  # [lon, lat]
+                            "location": maneuver.get("location"),
                             "bearing_before": maneuver.get("bearing_before"),
                             "bearing_after": maneuver.get("bearing_after"),
                         },
-
-                        # sometimes OSRM includes step geometry depending on config
                         "geometry": step.get("geometry", None),
                         "name": step.get("name", "")
                     })

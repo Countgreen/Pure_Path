@@ -1,0 +1,56 @@
+# -------------------------------
+# Core Python Utilities
+# -------------------------------
+numpy
+pandas
+scipy
+
+# -------------------------------
+# Machine Learning / Deep Learning
+# -------------------------------
+scikit-learn
+tensorflow
+keras
+
+# -------------------------------
+# Data Visualization
+# -------------------------------
+matplotlib
+seaborn
+plotly
+
+# -------------------------------
+# Backend / API
+# -------------------------------
+flask
+flask-cors
+fastapi
+uvicorn
+
+# -------------------------------
+# HTTP Requests & APIs
+# -------------------------------
+requests
+python-dotenv
+
+# -------------------------------
+# AQI & Geospatial Processing
+# -------------------------------
+geopy
+shapely
+
+# -------------------------------
+# Database (optional but recommended)
+# -------------------------------
+sqlalchemy
+
+# -------------------------------
+# Dashboard (optional)
+# -------------------------------
+streamlit
+
+# -------------------------------
+# Utilities
+# -------------------------------
+joblib
+tqdm

@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PurePath — AQI Aware Navigation</title>
+
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet"/>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: Inter, system-ui, Arial; }
+    body { background: #0b1220; color: white; height: 100vh; overflow: hidden; }
+
+    .app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; width: 100vw; }
+
+    /* Sidebar scroll */
+    .sidebar {
+      background: rgba(18, 26, 46, 0.95);
+      border-right: 1px solid rgba(255,255,255,0.08);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-y: auto;
+      height: 100vh;
+    }
+    .sidebar::-webkit-scrollbar { width: 6px; }
+    .sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 10px; }
+
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .logo {
+      width: 38px; height: 38px; border-radius: 12px;
+      background: linear-gradient(135deg, #22c55e, #06b6d4);
+      box-shadow: 0 8px 25px rgba(34,197,94,0.25);
+      flex-shrink: 0;
+    }
+
+    .brand h1 { font-size: 18px; font-weight: 700; }
+    .brand p { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+
+    .inputs { display: flex; flex-direction: column; gap: 10px; }
+    label { font-size: 12px; opacity: 0.75; margin-bottom: 4px; display: block; }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.25);
+      color: white;
+      outline: none;
+      font-size: 14px;
+    }
+
+    input:focus {
+      border-color: rgba(34,197,94,0.55);
+      box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
+    }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: none;
+      cursor: pointer;
+      background: linear-gradient(135deg, #22c55e, #06b6d4);
+      color: #071018;
+      font-weight: 700;
+      font-size: 14px;
+      transition: transform 0.08s ease;
+    }
+    .btn:active { transform: scale(0.98); }
+
+    .btn.secondary {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: white;
+      font-weight: 600;
+    }
+
+    .btnGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    .status { font-size: 12px; opacity: 0.8; line-height: 1.3; }
+
+    .routes-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; opacity: 0.9; }
+
+    .routes {
+      display: flex; flex-direction: column; gap: 10px;
+      max-height: 38vh;
+      overflow: auto;
+      padding-right: 6px;
+    }
+    .routes::-webkit-scrollbar { width: 6px; }
+    .routes::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 10px; }
+
+    .route-item {
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .route-item:hover { background: rgba(255,255,255,0.07); }
+
+    .route-item.active {
+      border-color: rgba(34,197,94,0.7);
+      box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
+    }
+
+    .row { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+    .route-name { font-size: 14px; font-weight: 700; }
+
+    .pill {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.12);
+      white-space: nowrap;
+    }
+
+    .meta { margin-top: 8px; display: flex; gap: 10px; font-size: 12px; opacity: 0.8; flex-wrap: wrap; }
+    .meta span {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 5px 8px;
+      border-radius: 10px;
+    }
+
+    #map { width: 100%; height: 100%; }
+
+    .hint { font-size: 12px; opacity: 0.65; line-height: 1.4; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 6px 10px;
+      border-radius: 12px;
+    }
+
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+    .selectedBox { display: none; }
+    .selectedBox.active { display: block; }
+
+    .selectedTitle {
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 10px;
+    }
+
+    .selectedRow {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    /* Popup text visibility */
+    .maplibregl-popup-content {
+      color: #111 !important;
+      font-size: 13px !important;
+      line-height: 1.3 !important;
+    }
+    .maplibregl-popup-close-button {
+      color: #111 !important;
+      font-size: 16px !important;
+    }
+
+    /* ✅ Aesthetic toast */
+    .toast {
+      position: fixed;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 15, 25, 0.92);
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+      padding: 10px 14px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 9999;
+      opacity: 0;
+      pointer-events: none;
+      transition: 0.25s ease;
+      min-width: 220px;
+      max-width: 420px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .toastIcon {
+      width: 26px;
+      height: 26px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #22c55e, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #071018;
+      font-weight: 900;
+      flex-shrink: 0;
+    }
+
+    .toastText {
+      font-size: 13px;
+      line-height: 1.2;
+      color: rgba(255,255,255,0.95);
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ✅ Toast container -->
+  <div id="toast" class="toast">
+    <div class="toastIcon">✓</div>
+    <div id="toastText" class="toastText">Done</div>
+  </div>
+
+  <div class="app">
+    <div class="sidebar">
+      <div class="brand">
+        <div class="logo"></div>
+        <div>
+          <h1>PurePath</h1>
+          <p>AQI-aware navigation</p>
+        </div>
+      </div>
+
+      <div class="card inputs">
+        <div>
+          <label>Start</label>
+          <input id="start" placeholder="e.g., Connaught Place" value="Connaught Place" />
+        </div>
+        <div>
+          <label>Destination</label>
+          <input id="end" placeholder="e.g., India Gate" value="India Gate" />
+        </div>
+
+        <button class="btn" id="btnFind">Find Routes</button>
+
+        <div class="btnGrid">
+          <button class="btn secondary" id="btnSwap">Swap</button>
+          <button class="btn secondary" id="btnSafest">Safest</button>
+          <button class="btn secondary" id="btnFastest">Fastest</button>
+          <button class="btn secondary" id="btnBest">Best</button>
+        </div>
+
+        <div class="status" id="statusText">
+          Enter start & destination, then click <b>Find Routes</b>.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="routes-title">Routes</div>
+        <div class="routes" id="routesList">
+          <div class="hint">Routes will appear here after search.</div>
+        </div>
+
+        <div style="margin-top:12px;">
+          <button class="btn secondary" id="btnSelect">Select Route</button>
+        </div>
+      </div>
+
+      <div class="card selectedBox" id="selectedBox">
+        <div class="selectedTitle">✅ Selected Route</div>
+        <div class="selectedRow"><span>Route</span><b id="selRoute">-</b></div>
+        <div class="selectedRow"><span>Distance</span><b id="selDistance">-</b></div>
+        <div class="selectedRow"><span>Time</span><b id="selTime">-</b></div>
+        <div class="selectedRow"><span>AQI</span><b id="selAQI">-</b></div>
+        <div class="selectedRow"><span>Color</span><b id="selColor">-</b></div>
+      </div>
+
+      <div class="card">
+        <div class="routes-title">AQI Legend</div>
+        <div class="legend">
+          <div class="legend-item"><span class="dot" style="background:#22c55e"></span> Good</div>
+          <div class="legend-item"><span class="dot" style="background:#eab308"></span> Moderate</div>
+          <div class="legend-item"><span class="dot" style="background:#f97316"></span> Unhealthy</div>
+          <div class="legend-item"><span class="dot" style="background:#3b82f6"></span> Very Unhealthy</div>
+          <div class="legend-item"><span class="dot" style="background:#ef4444"></span> Hazardous</div>
+          <div class="legend-item"><span class="dot" style="background:#9ca3af"></span> Unknown</div>
+        </div>
+      </div>
+
+      <div class="hint">
+        Tip: Click route to highlight it → click line for popup → click <b>Select Route</b>.
+      </div>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <script>
+    const BACKEND_URL = "http://127.0.0.1:8000/navigate";
+    const MAP_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json";
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: MAP_STYLE,
+      center: [77.2090, 28.6139],
+      zoom: 12
+    });
+
+    map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    let currentRoutes = [];
+    let activeRouteIndex = 0;
+
+    let startMarker = null;
+    let endMarker = null;
+
+    let popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true });
+
+    // ✅ Toast helper
+    let toastTimer = null;
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      const toastText = document.getElementById("toastText");
+
+      toastText.innerHTML = message;
+
+      toast.classList.add("show");
+
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.classList.remove("show");
+      }, 1800);
+    }
+
+    function setStatus(msg) {
+      document.getElementById("statusText").innerHTML = msg;
+    }
+
+    function km(meters) {
+      return (meters / 1000).toFixed(1) + " km";
+    }
+
+    function mins(seconds) {
+      return Math.round(seconds / 60) + " min";
+    }
+
+    function aqiText(aqi) {
+      if (aqi === null || aqi === undefined) return "N/A";
+      return Math.round(aqi).toString();
+    }
+
+    function clearRoutes() {
+      const style = map.getStyle();
+      if (!style || !style.layers) return;
+
+      style.layers
+        .filter(l => l.id.startsWith("route-line-"))
+        .forEach(l => map.getLayer(l.id) && map.removeLayer(l.id));
+
+      Object.keys(style.sources || {})
+        .filter(s => s.startsWith("route-src-"))
+        .forEach(s => map.getSource(s) && map.removeSource(s));
+    }
+
+    function addRouteToMap(route, idx, isActive) {
+      const sourceId = `route-src-${idx}`;
+      const layerId = `route-line-${idx}`;
+
+      map.addSource(sourceId, {
+        type: "geojson",
+        data: { type: "Feature", geometry: route.geometry }
+      });
+
+      map.addLayer({
+        id: layerId,
+        type: "line",
+        source: sourceId,
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": route.color || "#9ca3af",
+          "line-width": isActive ? 7 : 4,
+          "line-opacity": isActive ? 0.95 : 0.60
+        }
+      });
+
+      map.on("click", layerId, (e) => {
+        highlightRoute(idx);
+
+        const r = currentRoutes[idx];
+        const html = `
+          <div>
+            <b>Route ${idx + 1}</b><br/>
+            🛣️ ${km(r.distance_m)}<br/>
+            ⏱️ ${mins(r.duration_s)}<br/>
+            🌫️ AQI: ${aqiText(r.aqi)}<br/>
+            🎨 ${r.color_name || "Unknown"}
+          </div>
+        `;
+
+        popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+      });
+
+      map.on("mouseenter", layerId, () => map.getCanvas().style.cursor = "pointer");
+      map.on("mouseleave", layerId, () => map.getCanvas().style.cursor = "");
+    }
+
+    function highlightRoute(activeIndex) {
+      activeRouteIndex = activeIndex;
+
+      currentRoutes.forEach((r, idx) => {
+        const layerId = `route-line-${idx}`;
+        if (!map.getLayer(layerId)) return;
+
+        map.setPaintProperty(layerId, "line-width", idx === activeIndex ? 7 : 4);
+        map.setPaintProperty(layerId, "line-opacity", idx === activeIndex ? 0.95 : 0.60);
+      });
+
+      const items = document.querySelectorAll(".route-item");
+      items.forEach((el, idx) => el.classList.toggle("active", idx === activeIndex));
+    }
+
+    function fitToAllRoutes(routes) {
+      let allCoords = [];
+      routes.forEach(r => {
+        if (r.geometry && r.geometry.coordinates) {
+          allCoords = allCoords.concat(r.geometry.coordinates);
+        }
+      });
+
+      if (allCoords.length === 0) return;
+
+      let minLng = allCoords[0][0], maxLng = allCoords[0][0];
+      let minLat = allCoords[0][1], maxLat = allCoords[0][1];
+
+      allCoords.forEach(([lng, lat]) => {
+        if (lng < minLng) minLng = lng;
+        if (lng > maxLng) maxLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      });
+
+      map.fitBounds([[minLng, minLat], [maxLng, maxLat]], {
+        padding: 80,
+        duration: 900
+      });
+    }
+
+    function renderRoutesList(routes) {
+      const list = document.getElementById("routesList");
+      list.innerHTML = "";
+
+      routes.forEach((r, idx) => {
+        const div = document.createElement("div");
+        div.className = "route-item" + (idx === 0 ? " active" : "");
+
+        div.innerHTML = `
+          <div class="row">
+            <div class="route-name">Route ${idx + 1}</div>
+            <div class="pill">AQI: ${aqiText(r.aqi)}</div>
+          </div>
+          <div class="meta">
+            <span>🛣️ ${km(r.distance_m)}</span>
+            <span>⏱️ ${mins(r.duration_s)}</span>
+            <span>🎨 ${r.color_name || "Unknown"}</span>
+          </div>
+        `;
+
+        div.onclick = () => highlightRoute(idx);
+        list.appendChild(div);
+      });
+    }
+
+    function setMarkers(startCoord, endCoord) {
+      if (startMarker) startMarker.remove();
+      if (endMarker) endMarker.remove();
+
+      startMarker = new maplibregl.Marker({ color: "#22c55e" })
+        .setLngLat(startCoord)
+        .setPopup(new maplibregl.Popup().setText("Start"))
+        .addTo(map);
+
+      endMarker = new maplibregl.Marker({ color: "#ef4444" })
+        .setLngLat(endCoord)
+        .setPopup(new maplibregl.Popup().setText("Destination"))
+        .addTo(map);
+    }
+
+    function showSelectedRouteBox(route, idx) {
+      const box = document.getElementById("selectedBox");
+      box.classList.add("active");
+
+      document.getElementById("selRoute").innerText = `Route ${idx + 1}`;
+      document.getElementById("selDistance").innerText = km(route.distance_m);
+      document.getElementById("selTime").innerText = mins(route.duration_s);
+      document.getElementById("selAQI").innerText = aqiText(route.aqi);
+      document.getElementById("selColor").innerText = route.color_name || "Unknown";
+    }
+
+    function pickSafestRouteIndex(routes) {
+      let bestIdx = -1;
+      let bestAQI = Infinity;
+
+      routes.forEach((r, idx) => {
+        if (r.aqi === null || r.aqi === undefined) return;
+        if (r.aqi < bestAQI) {
+          bestAQI = r.aqi;
+          bestIdx = idx;
+        }
+      });
+
+      return bestIdx === -1 ? 0 : bestIdx;
+    }
+
+    function pickFastestRouteIndex(routes) {
+      let bestIdx = 0;
+      let bestTime = Infinity;
+
+      routes.forEach((r, idx) => {
+        if (r.duration_s < bestTime) {
+          bestTime = r.duration_s;
+          bestIdx = idx;
+        }
+      });
+
+      return bestIdx;
+    }
+
+    function pickBestRouteIndex(routes) {
+      // Best = balanced AQI + Time
+      // Score = 0.6*(normalized AQI) + 0.4*(normalized time)
+
+      const times = routes.map(r => r.duration_s);
+      const aqis = routes.map(r => (r.aqi === null || r.aqi === undefined) ? null : r.aqi);
+
+      const minT = Math.min(...times);
+      const maxT = Math.max(...times);
+
+      const validAqis = aqis.filter(a => a !== null);
+      const minA = validAqis.length ? Math.min(...validAqis) : 0;
+      const maxA = validAqis.length ? Math.max(...validAqis) : 1;
+
+      function norm(val, min, max) {
+        if (max === min) return 0;
+        return (val - min) / (max - min);
+      }
+
+      let bestIdx = 0;
+      let bestScore = Infinity;
+
+      routes.forEach((r, idx) => {
+        const tScore = norm(r.duration_s, minT, maxT);
+
+        const aqiVal = (r.aqi === null || r.aqi === undefined) ? (maxA + 50) : r.aqi;
+        const aScore = norm(aqiVal, minA, maxA + 50);
+
+        const score = 0.6 * aScore + 0.4 * tScore;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = idx;
+        }
+      });
+
+      return bestIdx;
+    }
+
+    async function findRoutes() {
+      const start = document.getElementById("start").value.trim();
+      const end = document.getElementById("end").value.trim();
+
+      if (!start || !end) {
+        setStatus("❌ Please enter both Start and Destination.");
+        return;
+      }
+
+      setStatus("⏳ Finding best AQI-safe routes...");
+      document.getElementById("routesList").innerHTML = `<div class="hint">Loading routes...</div>`;
+      document.getElementById("selectedBox").classList.remove("active");
+
+      try {
+        const url = `${BACKEND_URL}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+        const res = await fetch(url);
+
+        if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+
+        const data = await res.json();
+
+        if (!data.routes || data.routes.length === 0) {
+          setStatus("⚠️ No routes found.");
+          document.getElementById("routesList").innerHTML = `<div class="hint">No routes available.</div>`;
+          return;
+        }
+
+        if (!map.isStyleLoaded()) {
+          await new Promise(resolve => map.once("load", resolve));
+        }
+
+        currentRoutes = data.routes;
+        activeRouteIndex = 0;
+
+        clearRoutes();
+
+        data.routes.forEach((route, idx) => {
+          addRouteToMap(route, idx, idx === 0);
+        });
+
+        renderRoutesList(data.routes);
+
+        if (data.start_coord && data.end_coord) {
+          setMarkers(data.start_coord, data.end_coord);
+        }
+
+        fitToAllRoutes(data.routes);
+
+        setStatus(`✅ Found <b>${data.routes.length}</b> route(s). Click a route to highlight it.`);
+        showToast(`✅ Found ${data.routes.length} route(s)`);
+
+      } catch (err) {
+        console.error(err);
+        setStatus(`❌ Failed to fetch routes. Make sure FastAPI is running on <b>127.0.0.1:8000</b>.`);
+        document.getElementById("routesList").innerHTML = `<div class="hint">Error loading routes.</div>`;
+        showToast("❌ Error loading routes");
+      }
+    }
+
+    document.getElementById("btnFind").addEventListener("click", findRoutes);
+
+    document.getElementById("btnSwap").addEventListener("click", () => {
+      const s = document.getElementById("start");
+      const e = document.getElementById("end");
+      const temp = s.value;
+      s.value = e.value;
+      e.value = temp;
+
+      setStatus("🔁 Swapped locations. Click Find Routes.");
+      showToast("🔁 Swapped start & destination");
+    });
+
+    document.getElementById("btnSafest").addEventListener("click", () => {
+      if (!currentRoutes || currentRoutes.length === 0) {
+        showToast("⚠️ Search routes first");
+        return;
+      }
+
+      const safestIdx = pickSafestRouteIndex(currentRoutes);
+      highlightRoute(safestIdx);
+
+      const r = currentRoutes[safestIdx];
+      setStatus(`🛡️ Safest route: <b>Route ${safestIdx + 1}</b> (AQI: <b>${aqiText(r.aqi)}</b>)`);
+      showToast(`🛡️ Safest: Route ${safestIdx + 1} (AQI ${aqiText(r.aqi)})`);
+    });
+
+    document.getElementById("btnFastest").addEventListener("click", () => {
+      if (!currentRoutes || currentRoutes.length === 0) {
+        showToast("⚠️ Search routes first");
+        return;
+      }
+
+      const fastestIdx = pickFastestRouteIndex(currentRoutes);
+      highlightRoute(fastestIdx);
+
+      const r = currentRoutes[fastestIdx];
+      setStatus(`⚡ Fastest route: <b>Route ${fastestIdx + 1}</b> (Time: <b>${mins(r.duration_s)}</b>)`);
+      showToast(`⚡ Fastest: Route ${fastestIdx + 1} (${mins(r.duration_s)})`);
+    });
+
+    document.getElementById("btnBest").addEventListener("click", () => {
+      if (!currentRoutes || currentRoutes.length === 0) {
+        showToast("⚠️ Search routes first");
+        return;
+      }
+
+      const bestIdx = pickBestRouteIndex(currentRoutes);
+      highlightRoute(bestIdx);
+
+      const r = currentRoutes[bestIdx];
+      setStatus(`🏆 Best route: <b>Route ${bestIdx + 1}</b> (AQI: <b>${aqiText(r.aqi)}</b>, Time: <b>${mins(r.duration_s)}</b>)`);
+      showToast(`🏆 Best: Route ${bestIdx + 1}`);
+    });
+
+    document.getElementById("btnSelect").addEventListener("click", () => {
+      if (!currentRoutes || currentRoutes.length === 0) {
+        showToast("⚠️ Search routes first");
+        return;
+      }
+
+      const selected = currentRoutes[activeRouteIndex];
+      showSelectedRouteBox(selected, activeRouteIndex);
+
+      // ❌ removed ugly alert()
+      showToast(`✅ Route ${activeRouteIndex + 1} selected`);
+    });
+
+    map.on("load", () => {
+      findRoutes();
+    });
+  </script>
+</body>
+</html>
